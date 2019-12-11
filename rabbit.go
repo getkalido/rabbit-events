@@ -25,6 +25,7 @@ type RabbitConfig interface {
 	GetUserName() string
 	GetPassword() string
 	GetHost() string
+	GetConnectTimeout() time.Duration
 }
 
 // ProcessDirectMessage Processes messages from the `exchange` queue. All calls bind to the same queue, and messages are load balanced over them.
