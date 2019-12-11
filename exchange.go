@@ -21,11 +21,11 @@ type RabbitExchange interface {
 type RabbitExchangeImpl struct {
 	rabbitConnectionMutex          sync.RWMutex
 	rabbitConnectionConnectTimeout chan int
-	rabbitIni                      *RabbitIni
+	rabbitIni                      RabbitConfig
 	rabbitConnection               *amqp.Connection
 }
 
-func NewRabbitExchange(rabbitIni *RabbitIni) *RabbitExchangeImpl {
+func NewRabbitExchange(rabbitIni RabbitConfig) *RabbitExchangeImpl {
 	return &RabbitExchangeImpl{
 		rabbitIni:                      rabbitIni,
 		rabbitConnectionConnectTimeout: make(chan int, 1),
@@ -291,7 +291,7 @@ func (re *RabbitExchangeImpl) readEventConnection() *amqp.Connection {
  It uses rabbitConnectionConnectTimeout as a semaphore with timeout to prevent many go routines waiting to try to connect.
  It still needs to lock rabbitConnectionMutex that is used for faster read access
 */
-func (re *RabbitExchangeImpl) newEventConnection(old *amqp.Connection, rabbitIni *RabbitIni) (*amqp.Connection, error) {
+func (re *RabbitExchangeImpl) newEventConnection(old *amqp.Connection, rabbitIni RabbitConfig) (*amqp.Connection, error) {
 	timer := time.NewTimer(rabbitIni.GetConnectTimeout())
 	defer timer.Stop()
 	select {

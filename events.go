@@ -1,7 +1,6 @@
 package rabbitevents
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"runtime"
@@ -25,11 +24,11 @@ type Event struct {
 }
 
 type EventSource struct {
-	Context    context.Context
+	Context    map[string][]string
 	Originator string
 }
 
-type EventEmitter func(action ActionType, context context.Context, id int64, state interface{}) error
+type EventEmitter func(action ActionType, context map[string][]string, id int64, state interface{}) error
 
 type Unsubscribe func()
 
@@ -58,7 +57,7 @@ func NewRabbitEventHandler(rabbitEx RabbitExchange, exchangeName string) RabbitE
 }
 
 func (rem *ImplRabbitEventHandler) Emit(path string) EventEmitter {
-	return func(action ActionType, context context.Context, id int64, state interface{}) error {
+	return func(action ActionType, context map[string][]string, id int64, state interface{}) error {
 		event := Event{
 			Path:   path,
 			Action: action,
@@ -106,7 +105,7 @@ func (rem *ImplRabbitEventHandler) Consume(path string, typer ...func(*interface
 	return eo, nil
 }
 
-func Emit(rabbitIni *RabbitIni, path string, action ActionType, context context.Context, id int64, state interface{}) error {
+func Emit(rabbitIni *RabbitIni, path string, action ActionType, context map[string][]string, id int64, state interface{}) error {
 
 	r := NewRabbitExchange(rabbitIni)
 
