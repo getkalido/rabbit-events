@@ -160,13 +160,13 @@ func ProcessDirectMessage(rabbitIni RabbitConfig, exchange, routingKey string, h
 }
 
 // SendChangeNotificationMessages Sends a bunch of messages on the change notification rabbit channel, without dialing everytime like a noob
-func SendChangeNotificationMessages(messages []string, rabbitIni *RabbitIni) {
+func SendChangeNotificationMessages(messages []string, channel string, rabbitIni RabbitConfig) {
 
 	exchange := NewRabbitExchange(rabbitIni)
 
 	defer func() { _ = exchange.Close() }()
 
-	messageHandler := PackerString(exchange.SendTo(rabbitIni.GetNotifChannel(), ExchangeTypeFanout, false, true, ""))
+	messageHandler := PackerString(exchange.SendTo(channel, ExchangeTypeFanout, false, true, ""))
 
 	err := messageHandler(messages)
 	if err != nil {
@@ -181,8 +181,9 @@ type RabbitBatcher struct {
 	QuiescenceTime     time.Duration
 	MaxDelay           time.Duration
 	MaxMessagesInBatch int
-	BatchSender        func([]string, *RabbitIni)
-	Config             *RabbitIni
+	BatchSender        func([]string, string, RabbitConfig)
+	Config             RabbitConfig
+	Channel            string
 }
 
 var DefaultQuiescenceTime time.Duration = time.Millisecond * 5
@@ -229,7 +230,7 @@ func (rb *RabbitBatcher) Process() {
 					quiescence.Reset(rb.QuiescenceTime)
 				}
 				if len(messages) >= rb.MaxMessagesInBatch {
-					rb.BatchSender(messages, rb.Config)
+					rb.BatchSender(messages, rb.Channel, rb.Config)
 					messages = messages[:0]
 					timeoutC = nil
 					quiescenceC = nil
@@ -237,14 +238,14 @@ func (rb *RabbitBatcher) Process() {
 			}
 		case <-timeoutC:
 			{
-				rb.BatchSender(messages, rb.Config)
+				rb.BatchSender(messages, rb.Channel, rb.Config)
 				messages = messages[:0]
 				timeoutC = nil
 				quiescenceC = nil
 			}
 		case <-quiescenceC:
 			{
-				rb.BatchSender(messages, rb.Config)
+				rb.BatchSender(messages, rb.Channel, rb.Config)
 				messages = messages[:0]
 				timeoutC = nil
 				quiescenceC = nil
@@ -252,7 +253,7 @@ func (rb *RabbitBatcher) Process() {
 		case <-rb.stop:
 			{
 				if len(messages) > 0 {
-					rb.BatchSender(messages, rb.Config)
+					rb.BatchSender(messages, rb.Channel, rb.Config)
 				}
 				return
 			}
