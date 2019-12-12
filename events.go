@@ -100,6 +100,9 @@ func (rem *ImplRabbitEventHandler) Consume(path string, typer ...func(*interface
 	}
 	rem.stop = stop
 	eo := &eventObserver{}
+	for _, tr := range typer {
+		eo.typer = tr
+	}
 	go func() { _ = receive(eo.Change) }()
 
 	return eo, nil
@@ -121,10 +124,16 @@ type eventObserver struct {
 	//EventId -> listenerID -> listener
 	listeners      map[int64]map[int64]func(*Event)
 	nextListenerID int64
+	typer          func(*interface{})
 }
 
 func (eo *eventObserver) Change(data []byte) error {
 	e := &Event{}
+
+	if eo.typer != nil {
+		eo.typer(&e.State)
+	}
+
 	err := json.Unmarshal(data, e)
 	if err != nil {
 		return err
