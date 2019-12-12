@@ -40,7 +40,7 @@ type TargetedEventConsumer func(handler func(*Event)) (func(), error)
 
 type RabbitEventHandler interface {
 	Emit(path string) EventEmitter
-	Consume(path string, typer ...func(*interface{})) (EventConsumer, error)
+	Consume(path string, typer ...func() interface{}) (EventConsumer, error)
 }
 
 type ImplRabbitEventHandler struct {
@@ -93,13 +93,16 @@ func (rem *ImplRabbitEventHandler) Emit(path string) EventEmitter {
 	}
 }
 
-func (rem *ImplRabbitEventHandler) Consume(path string, typer ...func(*interface{})) (EventConsumer, error) {
+func (rem *ImplRabbitEventHandler) Consume(path string, typer ...func() interface{}) (EventConsumer, error) {
 	receive, stop, err := rem.rabbitEx.ReceiveFrom(rem.exchangeName, ExchangeTypeTopic, true, false, path, "")
 	if err != nil {
 		return nil, err
 	}
 	rem.stop = stop
 	eo := &eventObserver{}
+	for _, tr := range typer {
+		eo.typer = tr
+	}
 	go func() { _ = receive(eo.Change) }()
 
 	return eo, nil
@@ -121,10 +124,16 @@ type eventObserver struct {
 	//EventId -> listenerID -> listener
 	listeners      map[int64]map[int64]func(*Event)
 	nextListenerID int64
+	typer          func() interface{}
 }
 
 func (eo *eventObserver) Change(data []byte) error {
 	e := &Event{}
+
+	if eo.typer != nil {
+		e.State = eo.typer()
+	}
+
 	err := json.Unmarshal(data, e)
 	if err != nil {
 		return err
