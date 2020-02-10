@@ -34,6 +34,7 @@ type Unsubscribe func()
 
 type EventConsumer interface {
 	Subscribe(ids []int64, handler func(*Event)) Unsubscribe
+	SubscribeAll(handler func(*Event)) Unsubscribe
 }
 
 type TargetedEventConsumer func(handler func(*Event)) (func(), error)
@@ -125,6 +126,7 @@ type eventObserver struct {
 	listeners      map[int64]map[int64]func(*Event)
 	nextListenerID int64
 	typer          func() interface{}
+	listener       func(*Event) //This is a default listener for all events
 }
 
 func (eo *eventObserver) Change(data []byte) error {
@@ -149,6 +151,12 @@ func (eo *eventObserver) Change(data []byte) error {
 		//If the listeners do a lot of work ,kicking these off in goroutines might be worth
 		listener(e)
 	}
+
+	if eo.listener == nil {
+		return nil
+	}
+
+	eo.listener(e)
 	return nil
 }
 
@@ -174,6 +182,18 @@ func (eo *eventObserver) Subscribe(ids []int64, handler func(*Event)) Unsubscrib
 		for _, id := range ids {
 			delete(eo.listeners[id], listenerID)
 		}
+	}
+
+}
+
+func (eo *eventObserver) SubscribeAll(handler func(*Event)) Unsubscribe {
+	eo.lock.Lock()
+	defer eo.lock.Unlock()
+
+	eo.listener = handler
+	return func() {
+		eo.lock.Lock()
+		defer eo.lock.Unlock()
 	}
 
 }
