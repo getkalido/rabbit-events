@@ -34,6 +34,7 @@ type Unsubscribe func()
 
 type EventConsumer interface {
 	Subscribe(ids []int64, handler func(*Event)) Unsubscribe
+	SubscribeUnfiltered(handler func(*Event)) Unsubscribe
 }
 
 type TargetedEventConsumer func(handler func(*Event)) (func(), error)
@@ -122,9 +123,11 @@ func Emit(rabbitIni *RabbitIni, path string, action ActionType, context map[stri
 type eventObserver struct {
 	lock sync.RWMutex
 	//EventId -> listenerID -> listener
-	listeners      map[int64]map[int64]func(*Event)
-	nextListenerID int64
-	typer          func() interface{}
+	listeners            map[int64]map[int64]func(*Event)
+	nextListenerID       int64
+	typer                func() interface{}
+	nextGlobalListenerID int64
+	globalListeners      map[int64]func(*Event) //This is a default listener for all events
 }
 
 func (eo *eventObserver) Change(data []byte) error {
@@ -149,6 +152,15 @@ func (eo *eventObserver) Change(data []byte) error {
 		//If the listeners do a lot of work ,kicking these off in goroutines might be worth
 		listener(e)
 	}
+
+	if eo.globalListeners == nil {
+		return nil
+	}
+
+	for _, globalListener := range eo.globalListeners {
+		globalListener(e)
+	}
+
 	return nil
 }
 
@@ -176,4 +188,21 @@ func (eo *eventObserver) Subscribe(ids []int64, handler func(*Event)) Unsubscrib
 		}
 	}
 
+}
+
+func (eo *eventObserver) SubscribeUnfiltered(handler func(*Event)) Unsubscribe {
+	eo.lock.Lock()
+	defer eo.lock.Unlock()
+
+	listenerID := eo.nextGlobalListenerID
+	eo.nextGlobalListenerID++
+
+	eo.globalListeners = make(map[int64]func(*Event))
+
+	eo.globalListeners[listenerID] = handler
+	return func() {
+		eo.lock.Lock()
+		defer eo.lock.Unlock()
+		delete(eo.globalListeners, listenerID)
+	}
 }

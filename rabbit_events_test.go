@@ -16,7 +16,7 @@ var _ = Describe("RabbitEvents", func() {
 		It("Should send messages after quiescence", func() {
 			messagesSent := make([]string, 0)
 			var l sync.Mutex
-			mockSender := func(m []string, ri *RabbitIni) {
+			mockSender := func(m []string, x string, ri RabbitConfig) {
 				l.Lock()
 				defer l.Unlock()
 				messagesSent = append(messagesSent, m...)
@@ -38,7 +38,7 @@ var _ = Describe("RabbitEvents", func() {
 			callCount := 0
 			var l sync.Mutex
 
-			mockSender := func(m []string, ri *RabbitIni) {
+			mockSender := func(m []string, x string, ri RabbitConfig) {
 				l.Lock()
 				defer l.Unlock()
 				callCount++
@@ -67,7 +67,7 @@ var _ = Describe("RabbitEvents", func() {
 			messagesSent := make([]string, 0)
 			var l sync.Mutex
 
-			mockSender := func(m []string, ri *RabbitIni) {
+			mockSender := func(m []string, x string, ri RabbitConfig) {
 				l.Lock()
 				defer l.Unlock()
 				messagesSent = append(messagesSent, m...)
