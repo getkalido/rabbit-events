@@ -148,17 +148,13 @@ func (eo *eventObserver) Change(data []byte) error {
 	eo.lock.RLock()
 	defer eo.lock.RUnlock()
 
-	if eo.listeners != nil {
-		for _, listener := range eo.listeners[e.ID] {
-			//If the listeners do a lot of work ,kicking these off in goroutines might be worth
-			listener(e)
-		}
+	for _, listener := range eo.listeners[e.ID] {
+		//If the listeners do a lot of work ,kicking these off in goroutines might be worth
+		listener(e)
 	}
 
-	if eo.globalListeners != nil {
-		for _, globalListener := range eo.globalListeners {
-			globalListener(e)
-		}
+	for _, globalListener := range eo.globalListeners {
+		globalListener(e)
 	}
 
 	return nil
