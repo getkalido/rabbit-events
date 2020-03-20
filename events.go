@@ -131,6 +131,10 @@ type eventObserver struct {
 }
 
 func (eo *eventObserver) Change(data []byte) error {
+	if data == nil {
+		return nil
+	}
+
 	e := &Event{}
 
 	if eo.typer != nil {
@@ -144,17 +148,9 @@ func (eo *eventObserver) Change(data []byte) error {
 	eo.lock.RLock()
 	defer eo.lock.RUnlock()
 
-	if eo.listeners == nil {
-		return nil
-	}
-
 	for _, listener := range eo.listeners[e.ID] {
 		//If the listeners do a lot of work ,kicking these off in goroutines might be worth
 		listener(e)
-	}
-
-	if eo.globalListeners == nil {
-		return nil
 	}
 
 	for _, globalListener := range eo.globalListeners {
