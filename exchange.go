@@ -245,7 +245,7 @@ func (re *RabbitExchangeImpl) ReceiveFrom(name, exchangeType string, durable, au
 					}
 					log.Printf("rabbit:ProcessMessages Rabbit Failed: %d - %s", e.Code, e.Reason)
 
-					if e.Code == 320 {
+					if e.Code == 320 || e.Code == 501 {
 						// for now only care about total connection loss
 						closer()
 						for {
