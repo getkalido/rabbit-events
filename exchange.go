@@ -227,7 +227,7 @@ func (re *RabbitExchangeImpl) Receive(exchange ExchangeSettings, queue QueueSett
 		msgs, err := ch.Consume(
 			q.Name, // queue
 			"",     // consumer
-			true,   // auto-ack
+			false,  // auto-ack
 			false,  // exclusive
 			false,  // no-local
 			false,  // no-wait
@@ -272,6 +272,16 @@ func (re *RabbitExchangeImpl) Receive(exchange ExchangeSettings, queue QueueSett
 					err = handler(m.Body)
 					if err != nil {
 						log.Printf("Error handeling rabbit message %+v\n", err)
+						err = m.Nack(false, false)
+						if err != nil {
+							log.Printf("Error Nack rabbit message %+v\n", err)
+						}
+						continue
+					}
+					err = m.Ack(false)
+					if err != nil {
+						log.Printf("Error Ack rabbit message %+v\n", err)
+						continue
 					}
 
 				case <-stop:
