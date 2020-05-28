@@ -14,6 +14,7 @@ type RabbitExchange interface {
 	SendTo(name, exchangeType string, durable, autoDelete bool, key string) MessageHandleFunc
 
 	ReceiveFrom(name, exchangeType string, durable, autoDelete bool, key string, clientName string) (func(MessageHandleFunc) error, func(), error)
+	Receive(exchange ExchangeSettings, queue QueueSettings) (func(MessageHandleFunc) error, func(), error)
 
 	Close() error
 }
@@ -116,6 +117,44 @@ func (re *RabbitExchangeImpl) SendTo(name, exchangeType string, durable, autoDel
 }
 
 func (re *RabbitExchangeImpl) ReceiveFrom(name, exchangeType string, durable, autoDelete bool, key string, clientName string) (func(MessageHandleFunc) error, func(), error) {
+	return re.Receive(ExchangeSettings{
+		Name:         name,
+		ExchangeType: exchangeType,
+		Durable:      durable,
+		AutoDelete:   autoDelete,
+		Exclusive:    false,
+		NoWait:       false,
+		Args:         nil,
+	}, QueueSettings{
+		Name:       clientName,
+		RoutingKey: key,
+		AutoDelete: true,
+		Exclusive:  true,
+	})
+}
+
+type ExchangeSettings struct {
+	Name         string
+	ExchangeType string
+	Durable      bool
+	AutoDelete   bool
+	Exclusive    bool
+	NoWait       bool
+	Args         map[string]interface{}
+}
+
+type QueueSettings struct {
+	Name       string
+	Durable    bool
+	AutoDelete bool
+	Exclusive  bool
+	NoWait     bool
+	Args       map[string]interface{}
+	BindArgs   map[string]interface{}
+	RoutingKey string
+}
+
+func (re *RabbitExchangeImpl) Receive(exchange ExchangeSettings, queue QueueSettings) (func(MessageHandleFunc) error, func(), error) {
 	getChannel := func() (<-chan amqp.Delivery, chan *amqp.Error, func(), error) {
 		conn, err := re.getEventConnection()
 
@@ -130,13 +169,13 @@ func (re *RabbitExchangeImpl) ReceiveFrom(name, exchangeType string, durable, au
 		}
 
 		err = ch.ExchangeDeclare(
-			name,         // name
-			exchangeType, // type
-			durable,      // durable
-			autoDelete,   // delete when unused
-			false,        // exclusive
-			false,        // no-wait
-			nil,          // args
+			exchange.Name,         // name
+			exchange.ExchangeType, // type
+			exchange.Durable,      // durable
+			exchange.AutoDelete,   // delete when unused
+			exchange.Exclusive,    // exclusive
+			exchange.NoWait,       // no-wait
+			exchange.Args,         // args
 		)
 
 		if err != nil {
@@ -149,12 +188,12 @@ func (re *RabbitExchangeImpl) ReceiveFrom(name, exchangeType string, durable, au
 		}
 
 		q, err := ch.QueueDeclare(
-			clientName, // name
-			false,      // durable
-			true,       // delete when unused
-			true,       // exclusive
-			false,      // no-wait
-			nil,        // args
+			queue.Name,       // name
+			queue.Durable,    // durable
+			queue.AutoDelete, // delete when unused
+			queue.Exclusive,  // exclusive
+			queue.NoWait,     // no-wait
+			queue.Args,       // args
 		)
 
 		if err != nil {
@@ -168,11 +207,11 @@ func (re *RabbitExchangeImpl) ReceiveFrom(name, exchangeType string, durable, au
 		}
 
 		err = ch.QueueBind(
-			q.Name, // queue name
-			key,    // routing key
-			name,   // exchange name
-			false,  // no-wait
-			nil,    //args
+			q.Name,           // queue name
+			queue.RoutingKey, // routing key
+			exchange.Name,    // exchange name
+			queue.NoWait,     // no-wait
+			queue.BindArgs,   //args
 		)
 
 		if err != nil {
@@ -188,7 +227,7 @@ func (re *RabbitExchangeImpl) ReceiveFrom(name, exchangeType string, durable, au
 		msgs, err := ch.Consume(
 			q.Name, // queue
 			"",     // consumer
-			true,   // auto-ack
+			false,  // auto-ack
 			false,  // exclusive
 			false,  // no-local
 			false,  // no-wait
@@ -233,6 +272,16 @@ func (re *RabbitExchangeImpl) ReceiveFrom(name, exchangeType string, durable, au
 					err = handler(m.Body)
 					if err != nil {
 						log.Printf("Error handeling rabbit message %+v\n", err)
+						err = m.Nack(false, false)
+						if err != nil {
+							log.Printf("Error Nack rabbit message %+v\n", err)
+						}
+						continue
+					}
+					err = m.Ack(false)
+					if err != nil {
+						log.Printf("Error Ack rabbit message %+v\n", err)
+						continue
 					}
 
 				case <-stop:
