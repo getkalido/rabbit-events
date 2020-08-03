@@ -20,6 +20,7 @@ type Event struct {
 	Action ActionType
 	Source EventSource
 	ID     int64
+	Old    interface{}
 	State  interface{}
 }
 
@@ -28,7 +29,7 @@ type EventSource struct {
 	Originator string
 }
 
-type EventEmitter func(action ActionType, context map[string][]string, id int64, state interface{}) error
+type EventEmitter func(action ActionType, context map[string][]string, id int64, old, state interface{}) error
 
 type Unsubscribe func()
 
@@ -58,7 +59,7 @@ func NewRabbitEventHandler(rabbitEx RabbitExchange, exchangeName string) RabbitE
 }
 
 func (rem *ImplRabbitEventHandler) Emit(path string) EventEmitter {
-	return func(action ActionType, context map[string][]string, id int64, state interface{}) error {
+	return func(action ActionType, context map[string][]string, id int64, old, state interface{}) error {
 		event := Event{
 			Path:   path,
 			Action: action,
@@ -66,6 +67,7 @@ func (rem *ImplRabbitEventHandler) Emit(path string) EventEmitter {
 			Source: EventSource{
 				Context: context,
 			},
+			Old:   old,
 			State: state,
 		}
 
@@ -109,7 +111,7 @@ func (rem *ImplRabbitEventHandler) Consume(path string, typer ...func() interfac
 	return eo, nil
 }
 
-func Emit(rabbitIni *RabbitIni, path string, action ActionType, context map[string][]string, id int64, state interface{}) error {
+func Emit(rabbitIni *RabbitIni, path string, action ActionType, context map[string][]string, id int64, old, state interface{}) error {
 
 	r := NewRabbitExchange(rabbitIni)
 
@@ -117,7 +119,7 @@ func Emit(rabbitIni *RabbitIni, path string, action ActionType, context map[stri
 
 	rem := NewRabbitEventHandler(r, rabbitIni.GetEventChannel())
 
-	return rem.Emit(path)(action, context, id, state)
+	return rem.Emit(path)(action, context, id, old, state)
 }
 
 type eventObserver struct {
