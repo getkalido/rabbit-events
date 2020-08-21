@@ -58,7 +58,10 @@ func (re *RabbitExchangeImpl) SendTo(name, exchangeType string, durable, autoDel
 				if firstError == nil {
 					firstError = errors.Wrapf(err, "conn.Channel Failed after try %v", try+1)
 				}
-				_, _ = re.newEventConnection(conn, re.rabbitIni)
+				conn, err = re.newEventConnection(conn, re.rabbitIni)
+				if err != nil {
+					return errors.Wrapf(err, "rabbit:Failed to reconnect to rabbit after %v tries, first failing to %+v", try+1, err)
+				}
 				continue
 			}
 
@@ -86,7 +89,10 @@ func (re *RabbitExchangeImpl) SendTo(name, exchangeType string, durable, autoDel
 				if firstError == nil {
 					firstError = errors.Wrapf(err, "ch.ExchangeDeclare Failed after try %v", try+1)
 				}
-				_, _ = re.newEventConnection(conn, re.rabbitIni)
+				conn, err = re.newEventConnection(conn, re.rabbitIni)
+				if err != nil {
+					return errors.Wrapf(err, "rabbit:Failed to reconnect to rabbit after %v tries, first failing to %+v", try+1, err)
+				}
 				continue
 			}
 
@@ -105,7 +111,10 @@ func (re *RabbitExchangeImpl) SendTo(name, exchangeType string, durable, autoDel
 				if firstError == nil {
 					firstError = errors.Wrapf(err, "ch.Publish Failed after try %v", try+1)
 				}
-				_, _ = re.newEventConnection(conn, re.rabbitIni)
+				conn, err = re.newEventConnection(conn, re.rabbitIni)
+				if err != nil {
+					return errors.Wrapf(err, "rabbit:Failed to reconnect to rabbit after %v tries, first failing to %+v", try+1, err)
+				}
 				continue
 			}
 
@@ -245,7 +254,8 @@ func (re *RabbitExchangeImpl) Receive(exchange ExchangeSettings, queue QueueSett
 			}, err
 		}
 
-		errChan := make(chan *amqp.Error)
+		//We buffer the errors, so that when we are not processing the error message (like while shutting down) the channel can still close.
+		errChan := make(chan *amqp.Error, 1)
 		ch.NotifyClose(errChan)
 
 		return msgs, errChan, func() {
