@@ -281,7 +281,7 @@ func (re *RabbitExchangeImpl) Receive(exchange ExchangeSettings, queue QueueSett
 					// Do something
 					err = handler(m.Body)
 					if err != nil {
-						log.Printf("Error handling rabbit message Exchange: %s Queue: %s Body: [%s] %+v\n", exchange.Name, queue.Name, string(m.Body), err)
+						log.Printf("Error handling rabbit message Exchange: %s Queue: %s Body: [%s] %+v\n", exchange.Name, queue.Name, m.Body, err)
 						err = m.Nack(false, false)
 						if err != nil {
 							log.Printf("Error Nack rabbit message %+v\n", err)
