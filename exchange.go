@@ -171,6 +171,13 @@ func (re *RabbitExchangeImpl) Receive(exchange ExchangeSettings, queue QueueSett
 			return nil, nil, func() {}, err
 		}
 
+		if conn.IsClosed() {
+			conn, err = re.newEventConnection(conn, re.rabbitIni)
+			if err != nil {
+				return nil, nil, func() {}, err
+			}
+		}
+
 		ch, err := conn.Channel()
 
 		if err != nil {
