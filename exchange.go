@@ -1,6 +1,7 @@
 package rabbitevents
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"sync"
@@ -43,16 +44,23 @@ func (re *RabbitExchangeImpl) Close() error {
 }
 
 func (re *RabbitExchangeImpl) SendTo(name, exchangeType string, durable, autoDelete bool, key string) MessageHandleFunc {
-	return func(message []byte) error {
+	return func(ctx context.Context, message []byte) error {
 		conn, err := re.getEventConnection()
 		if err != nil {
 			return err
+		}
+
+		if ctx.Err() != nil {
+			return ctx.Err()
 		}
 
 		var firstError error
 		var ch *amqp.Channel
 		var try int
 		for try = 0; try < 3; try++ {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
 			ch, err = conn.Channel()
 			if err != nil {
 				if firstError == nil {
@@ -61,6 +69,9 @@ func (re *RabbitExchangeImpl) SendTo(name, exchangeType string, durable, autoDel
 				conn, err = re.newEventConnection(conn, re.rabbitIni)
 				if err != nil {
 					return errors.Wrapf(err, "rabbit:Failed to reconnect to rabbit after %v tries, first failing to %+v", try+1, err)
+				}
+				if ctx.Err() != nil {
+					return ctx.Err()
 				}
 				continue
 			}
@@ -74,6 +85,10 @@ func (re *RabbitExchangeImpl) SendTo(name, exchangeType string, durable, autoDel
 					}
 				}
 			}()
+
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
 
 			err = ch.ExchangeDeclare(
 				name,         // name
@@ -93,7 +108,14 @@ func (re *RabbitExchangeImpl) SendTo(name, exchangeType string, durable, autoDel
 				if err != nil {
 					return errors.Wrapf(err, "rabbit:Failed to reconnect to rabbit after %v tries, first failing to %+v", try+1, err)
 				}
+				if ctx.Err() != nil {
+					return ctx.Err()
+				}
 				continue
+			}
+
+			if ctx.Err() != nil {
+				return ctx.Err()
 			}
 
 			err = ch.Publish(
@@ -114,6 +136,9 @@ func (re *RabbitExchangeImpl) SendTo(name, exchangeType string, durable, autoDel
 				conn, err = re.newEventConnection(conn, re.rabbitIni)
 				if err != nil {
 					return errors.Wrapf(err, "rabbit:Failed to reconnect to rabbit after %v tries, first failing to %+v", try+1, err)
+				}
+				if ctx.Err() != nil {
+					return ctx.Err()
 				}
 				continue
 			}
@@ -286,7 +311,7 @@ func (re *RabbitExchangeImpl) Receive(exchange ExchangeSettings, queue QueueSett
 				select {
 				case m := <-msgs:
 					// Do something
-					err = handler(m.Body)
+					err = handler(context.Background(), m.Body)
 					if err != nil {
 						log.Printf("Error handling rabbit message Exchange: %s Queue: %s Body: [%s] %+v\n", exchange.Name, queue.Name, m.Body, err)
 						err = m.Nack(false, false)
@@ -402,11 +427,11 @@ func Fanout(listen func(MessageHandleFunc) error) (func(MessageHandleFunc) func(
 	lock := sync.RWMutex{}
 	var counter int64 = 0
 
-	err := listen(func(message []byte) error {
+	err := listen(func(ctx context.Context, message []byte) error {
 		lock.RLock()
 		defer lock.RUnlock()
 		for _, listener := range listeners {
-			err := listener(message)
+			err := listener(ctx, message)
 			if err != nil {
 				return err
 			}

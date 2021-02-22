@@ -1,6 +1,7 @@
 package rabbitevents
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"runtime"
@@ -29,7 +30,7 @@ type EventSource struct {
 	Originator string
 }
 
-type EventEmitter func(action ActionType, context map[string][]string, id int64, old, state interface{}) error
+type EventEmitter func(ctx context.Context, action ActionType, context map[string][]string, id int64, old, state interface{}) error
 
 type Unsubscribe func()
 
@@ -59,7 +60,7 @@ func NewRabbitEventHandler(rabbitEx RabbitExchange, exchangeName string) RabbitE
 }
 
 func (rem *ImplRabbitEventHandler) Emit(path string) EventEmitter {
-	return func(action ActionType, context map[string][]string, id int64, old, state interface{}) error {
+	return func(ctx context.Context, action ActionType, context map[string][]string, id int64, old, state interface{}) error {
 		event := Event{
 			Path:   path,
 			Action: action,
@@ -78,11 +79,18 @@ func (rem *ImplRabbitEventHandler) Emit(path string) EventEmitter {
 			for {
 				first, more := frames.Next()
 
+				if ctx.Err() != nil {
+					return ctx.Err()
+				}
+
 				event.Source.Originator += first.File + ":" + fmt.Sprint(first.Line) + " " + first.Function + "\n"
 
 				if !more {
 					break
 				}
+			}
+			if ctx.Err() != nil {
+				return ctx.Err()
 			}
 		}
 
@@ -92,7 +100,11 @@ func (rem *ImplRabbitEventHandler) Emit(path string) EventEmitter {
 			return err
 		}
 
-		return rem.rabbitEx.SendTo(rem.exchangeName, ExchangeTypeTopic, true, false, path)(data)
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+
+		return rem.rabbitEx.SendTo(rem.exchangeName, ExchangeTypeTopic, true, false, path)(ctx, data)
 	}
 }
 
@@ -111,7 +123,7 @@ func (rem *ImplRabbitEventHandler) Consume(path string, typer ...func() interfac
 	return eo, nil
 }
 
-func Emit(rabbitIni *RabbitIni, path string, action ActionType, context map[string][]string, id int64, old, state interface{}) error {
+func Emit(ctx context.Context, rabbitIni *RabbitIni, path string, action ActionType, context map[string][]string, id int64, old, state interface{}) error {
 
 	r := NewRabbitExchange(rabbitIni)
 
@@ -119,7 +131,7 @@ func Emit(rabbitIni *RabbitIni, path string, action ActionType, context map[stri
 
 	rem := NewRabbitEventHandler(r, rabbitIni.GetEventChannel())
 
-	return rem.Emit(path)(action, context, id, old, state)
+	return rem.Emit(path)(ctx, action, context, id, old, state)
 }
 
 type eventObserver struct {
@@ -132,7 +144,7 @@ type eventObserver struct {
 	globalListeners      map[int64]func(*Event) //This is a default listener for all events
 }
 
-func (eo *eventObserver) Change(data []byte) error {
+func (eo *eventObserver) Change(ctx context.Context, data []byte) error {
 	if data == nil {
 		return nil
 	}

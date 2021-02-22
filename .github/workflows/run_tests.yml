@@ -15,10 +15,10 @@ jobs:
     name: Build
     runs-on: ubuntu-18.04
     steps:
-    - name: Set up Go 1.13
-      uses: actions/setup-go@v1
+    - name: Set up Go 1.15.8
+      uses: actions/setup-go@v2
       with:
-        go-version: 1.13.4
+        go-version: 1.15.8
       id: go
 
     - name: Fix up git URLs
@@ -48,4 +48,4 @@ jobs:
         go get github.com/onsi/gomega
         go get github.com/kisielk/errcheck
         go get github.com/onsi/ginkgo/ginkgo
-        ginkgo
+        cd test && ginkgo
