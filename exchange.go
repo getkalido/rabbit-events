@@ -184,6 +184,11 @@ func (re *RabbitExchangeImpl) Receive(exchange ExchangeSettings, queue QueueSett
 			return nil, nil, func() {}, err
 		}
 
+		err = ch.Qos(2, 0, false)
+		if err != nil {
+			log.Printf("rabbit:ProcessMessage:Consume Qos. Reason: %+v", err)
+		}
+
 		err = ch.ExchangeDeclare(
 			exchange.Name,         // name
 			exchange.ExchangeType, // type
