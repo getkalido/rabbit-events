@@ -3,6 +3,7 @@ package rabbitevents
 import (
 	"fmt"
 	"log"
+	"runtime"
 	"sync"
 	"time"
 
@@ -184,7 +185,7 @@ func (re *RabbitExchangeImpl) Receive(exchange ExchangeSettings, queue QueueSett
 			return nil, nil, func() {}, err
 		}
 
-		err = ch.Qos(2, 0, false)
+		err = ch.Qos(runtime.NumCPU(), 0, false)
 		if err != nil {
 			log.Printf("rabbit:ProcessMessage:Consume Qos. Reason: %+v", err)
 		}
@@ -290,21 +291,22 @@ func (re *RabbitExchangeImpl) Receive(exchange ExchangeSettings, queue QueueSett
 
 				select {
 				case m := <-msgs:
-					// Do something
-					err = handler(m.Body)
-					if err != nil {
-						log.Printf("Error handling rabbit message Exchange: %s Queue: %s Body: [%s] %+v\n", exchange.Name, queue.Name, m.Body, err)
-						err = m.Nack(false, false)
+					go func(m amqp.Delivery) {
+						err = handler(m.Body)
 						if err != nil {
-							log.Printf("Error Nack rabbit message %+v\n", err)
+							log.Printf("Error handling rabbit message Exchange: %s Queue: %s Body: [%s] %+v\n", exchange.Name, queue.Name, m.Body, err)
+							err = m.Nack(false, false)
+							if err != nil {
+								log.Printf("Error Nack rabbit message %+v\n", err)
+							}
+							return
 						}
-						continue
-					}
-					err = m.Ack(false)
-					if err != nil {
-						log.Printf("Error Ack rabbit message %+v\n", err)
-						continue
-					}
+						err = m.Ack(false)
+						if err != nil {
+							log.Printf("Error Ack rabbit message %+v\n", err)
+							return
+						}
+					}(m)
 
 				case <-stop:
 					return nil
