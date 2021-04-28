@@ -162,6 +162,7 @@ type QueueSettings struct {
 	Args       map[string]interface{}
 	BindArgs   map[string]interface{}
 	RoutingKey string
+	Prefetch   int
 }
 
 func (re *RabbitExchangeImpl) Receive(exchange ExchangeSettings, queue QueueSettings) (func(MessageHandleFunc) error, func(), error) {
@@ -185,7 +186,10 @@ func (re *RabbitExchangeImpl) Receive(exchange ExchangeSettings, queue QueueSett
 			return nil, nil, func() {}, err
 		}
 
-		err = ch.Qos(runtime.NumCPU(), 0, false)
+		if queue.Prefetch == 0 {
+			queue.Prefetch = runtime.NumCPU() * 2
+		}
+		err = ch.Qos(queue.Prefetch, 0, false)
 		if err != nil {
 			log.Printf("rabbit:ProcessMessage:Consume Qos. Reason: %+v", err)
 		}
