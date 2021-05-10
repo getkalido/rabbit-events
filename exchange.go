@@ -97,6 +97,13 @@ func (re *RabbitExchangeImpl) SendTo(name, exchangeType string, durable, autoDel
 				continue
 			}
 
+			var dm uint8
+			if durable {
+				dm = amqp.Persistent
+			} else {
+				dm = amqp.Transient
+			}
+
 			err = ch.Publish(
 				name,  // exchange
 				key,   // routing key
@@ -105,7 +112,7 @@ func (re *RabbitExchangeImpl) SendTo(name, exchangeType string, durable, autoDel
 				amqp.Publishing{
 					ContentType:  "text/plain",
 					Body:         message,
-					DeliveryMode: amqp.Transient,
+					DeliveryMode: dm,
 				})
 
 			if err != nil {
