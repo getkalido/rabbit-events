@@ -105,7 +105,7 @@ var _ = Describe("RabbitEvents", func() {
 	Describe("Event Publisher", func() {
 		It("Should cancel publishing midway if context is timed out", func() {
 			exchange := NewRabbitExchange(&RabbitIni{})
-			eventHandler := NewRabbitEventHandler(exchange, "")
+			eventHandler := NewRabbitEventHandler(exchange, "", 0)
 			emitter := eventHandler.Emit("test")
 			ctx, cancel := context.WithTimeout(context.Background(), -time.Nanosecond)
 			defer cancel()
@@ -116,7 +116,7 @@ var _ = Describe("RabbitEvents", func() {
 
 		It("Should cancel publishing midway if context is cancelled", func() {
 			exchange := NewRabbitExchange(&RabbitIni{})
-			eventHandler := NewRabbitEventHandler(exchange, "")
+			eventHandler := NewRabbitEventHandler(exchange, "", 0)
 			emitter := eventHandler.Emit("test")
 			ctx, cancel := context.WithCancel(context.Background())
 			cancel()
@@ -134,7 +134,7 @@ var _ = Describe("RabbitEvents", func() {
 				return nil
 			}
 			exchange.EXPECT().SendTo("test-exchange", ExchangeTypeTopic, true, false, "test").Return(exchangeRunner)
-			eventHandler := NewRabbitEventHandler(exchange, "test-exchange")
+			eventHandler := NewRabbitEventHandler(exchange, "test-exchange", 0)
 			emitter := eventHandler.Emit("test")
 			ctx, cancel := context.WithTimeout(context.Background(), time.Hour)
 			defer cancel()

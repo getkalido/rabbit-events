@@ -47,20 +47,34 @@ type RabbitEventHandler interface {
 }
 
 type ImplRabbitEventHandler struct {
-	rabbitEx     RabbitExchange
-	exchangeName string
-	stop         func()
+	rabbitEx      RabbitExchange
+	exchangeName  string
+	prefetchCount int
+	stop          func()
 }
 
-func NewRabbitEventHandler(rabbitEx RabbitExchange, exchangeName string) RabbitEventHandler {
+const rabbitPrefetchForSingleQueue = 100
+
+func NewRabbitEventHandler(rabbitEx RabbitExchange, exchangeName string, prefetchCount int) RabbitEventHandler {
+	if prefetchCount == 0 {
+		prefetchCount = rabbitPrefetchForSingleQueue + runtime.NumCPU()*2
+	}
 	return &ImplRabbitEventHandler{
-		rabbitEx:     rabbitEx,
-		exchangeName: exchangeName,
+		rabbitEx:      rabbitEx,
+		exchangeName:  exchangeName,
+		prefetchCount: prefetchCount,
 	}
 }
 
 func (rem *ImplRabbitEventHandler) Emit(path string) EventEmitter {
 	return func(ctx context.Context, action ActionType, context map[string][]string, id int64, old, state interface{}) error {
+		if ctx == nil {
+			return ErrNilContext
+		}
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+
 		event := Event{
 			Path:   path,
 			Action: action,
@@ -109,7 +123,21 @@ func (rem *ImplRabbitEventHandler) Emit(path string) EventEmitter {
 }
 
 func (rem *ImplRabbitEventHandler) Consume(path string, typer ...func() interface{}) (EventConsumer, error) {
-	receive, stop, err := rem.rabbitEx.ReceiveFrom(rem.exchangeName, ExchangeTypeTopic, true, false, path, "")
+	receive, stop, err := rem.rabbitEx.Receive(ExchangeSettings{
+		Name:         rem.exchangeName,
+		ExchangeType: ExchangeTypeTopic,
+		Durable:      true,
+		AutoDelete:   false,
+		Exclusive:    false,
+		NoWait:       false,
+		Args:         nil,
+	}, QueueSettings{
+		Name:       "",
+		RoutingKey: path,
+		AutoDelete: true,
+		Exclusive:  true,
+		Prefetch:   rem.prefetchCount,
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -124,12 +152,18 @@ func (rem *ImplRabbitEventHandler) Consume(path string, typer ...func() interfac
 }
 
 func Emit(ctx context.Context, rabbitIni *RabbitIni, path string, action ActionType, context map[string][]string, id int64, old, state interface{}) error {
+	if ctx == nil {
+		return ErrNilContext
+	}
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
 
 	r := NewRabbitExchange(rabbitIni)
 
 	defer func() { _ = r.Close() }()
 
-	rem := NewRabbitEventHandler(r, rabbitIni.GetEventChannel())
+	rem := NewRabbitEventHandler(r, rabbitIni.GetEventChannel(), 0)
 
 	return rem.Emit(path)(ctx, action, context, id, old, state)
 }
@@ -145,6 +179,13 @@ type eventObserver struct {
 }
 
 func (eo *eventObserver) Change(ctx context.Context, data []byte) error {
+	if ctx == nil {
+		return ErrNilContext
+	}
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+
 	if data == nil {
 		return nil
 	}
