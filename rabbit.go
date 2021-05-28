@@ -1,6 +1,7 @@
 package rabbitevents
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -19,7 +20,7 @@ type MessageHandler interface {
 	HandleMessage([]byte) error
 }
 
-type MessageHandleFunc func([]byte) error
+type MessageHandleFunc func(context.Context, []byte) error
 
 type RabbitConfig interface {
 	GetUserName() string
@@ -160,7 +161,7 @@ func ProcessDirectMessage(rabbitIni RabbitConfig, exchange, routingKey string, h
 }
 
 // SendChangeNotificationMessages Sends a bunch of messages on the change notification rabbit channel, without dialing everytime like a noob
-func SendChangeNotificationMessages(messages []string, channel string, rabbitIni RabbitConfig) {
+func SendChangeNotificationMessages(ctx context.Context, messages []string, channel string, rabbitIni RabbitConfig) {
 
 	exchange := NewRabbitExchange(rabbitIni)
 
@@ -168,7 +169,7 @@ func SendChangeNotificationMessages(messages []string, channel string, rabbitIni
 
 	messageHandler := PackerString(exchange.SendTo(channel, ExchangeTypeFanout, false, true, ""))
 
-	err := messageHandler(messages)
+	err := messageHandler(ctx, messages)
 	if err != nil {
 		log.Printf("Error sending rabbit messages %+v\n", err)
 	}
@@ -181,7 +182,7 @@ type RabbitBatcher struct {
 	QuiescenceTime     time.Duration
 	MaxDelay           time.Duration
 	MaxMessagesInBatch int
-	BatchSender        func([]string, string, RabbitConfig)
+	BatchSender        func(context.Context, []string, string, RabbitConfig)
 	Config             RabbitConfig
 	Channel            string
 }
@@ -230,7 +231,7 @@ func (rb *RabbitBatcher) Process() {
 					quiescence.Reset(rb.QuiescenceTime)
 				}
 				if len(messages) >= rb.MaxMessagesInBatch {
-					rb.BatchSender(messages, rb.Channel, rb.Config)
+					rb.BatchSender(context.Background(), messages, rb.Channel, rb.Config)
 					messages = messages[:0]
 					timeoutC = nil
 					quiescenceC = nil
@@ -238,14 +239,14 @@ func (rb *RabbitBatcher) Process() {
 			}
 		case <-timeoutC:
 			{
-				rb.BatchSender(messages, rb.Channel, rb.Config)
+				rb.BatchSender(context.Background(), messages, rb.Channel, rb.Config)
 				messages = messages[:0]
 				timeoutC = nil
 				quiescenceC = nil
 			}
 		case <-quiescenceC:
 			{
-				rb.BatchSender(messages, rb.Channel, rb.Config)
+				rb.BatchSender(context.Background(), messages, rb.Channel, rb.Config)
 				messages = messages[:0]
 				timeoutC = nil
 				quiescenceC = nil
@@ -253,7 +254,7 @@ func (rb *RabbitBatcher) Process() {
 		case <-rb.stop:
 			{
 				if len(messages) > 0 {
-					rb.BatchSender(messages, rb.Channel, rb.Config)
+					rb.BatchSender(context.Background(), messages, rb.Channel, rb.Config)
 				}
 				return
 			}
@@ -277,14 +278,21 @@ func init() {
 }
 
 func UnPacker(handler MessageHandleFunc) MessageHandleFunc {
-	return func(packed []byte) error {
+	return func(ctx context.Context, packed []byte) error {
+		if ctx == nil {
+			return ErrNilContext
+		}
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+
 		messages := make([]string, 0)
 		err := json.Unmarshal(packed, &messages)
 		if err != nil {
 			return err
 		}
 		for _, val := range messages {
-			err = handler([]byte(val))
+			err = handler(ctx, []byte(val))
 			if err != nil {
 				return err
 			}
@@ -293,13 +301,20 @@ func UnPacker(handler MessageHandleFunc) MessageHandleFunc {
 	}
 }
 
-func PackerString(handler MessageHandleFunc) func(messages []string) error {
-	return func(messages []string) error {
+func PackerString(handler MessageHandleFunc) func(ctx context.Context, messages []string) error {
+	return func(ctx context.Context, messages []string) error {
+		if ctx == nil {
+			return ErrNilContext
+		}
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+
 		data, err := json.Marshal(messages)
 		if err != nil {
 			return err
 		}
-		err = handler(data)
+		err = handler(ctx, data)
 		if err != nil {
 			return err
 		}

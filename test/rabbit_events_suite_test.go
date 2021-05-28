@@ -1,4 +1,4 @@
-package rabbitevents_test
+package test
 
 import (
 	"testing"

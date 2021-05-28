@@ -1,6 +1,7 @@
 package rabbitevents
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"runtime"
@@ -36,32 +37,50 @@ func NewRabbitExchange(rabbitIni RabbitConfig) *RabbitExchangeImpl {
 
 func (re *RabbitExchangeImpl) Close() error {
 	conn := re.readEventConnection()
-	if conn != nil {
-
+	if conn != nil && !conn.IsClosed() {
 		return conn.Close()
 	}
 	return nil
 }
 
 func (re *RabbitExchangeImpl) SendTo(name, exchangeType string, durable, autoDelete bool, key string) MessageHandleFunc {
-	return func(message []byte) error {
+	return func(ctx context.Context, message []byte) error {
+		if ctx == nil {
+			return ErrNilContext
+		}
+
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+
 		conn, err := re.getEventConnection()
 		if err != nil {
 			return err
 		}
 
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+
 		var firstError error
 		var ch *amqp.Channel
 		var try int
-		for try = 0; try < 3; try++ {
+		for try = 1; try <= 3; try++ {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+
+			if conn.IsClosed() {
+				conn, err = re.newEventConnection(conn, re.rabbitIni)
+				if err != nil {
+					return errors.Wrapf(err, "rabbit:Failed to reconnect to rabbit after %v tries, first failing to %+v", try, err)
+				}
+			}
+
 			ch, err = conn.Channel()
 			if err != nil {
 				if firstError == nil {
-					firstError = errors.Wrapf(err, "conn.Channel Failed after try %v", try+1)
-				}
-				conn, err = re.newEventConnection(conn, re.rabbitIni)
-				if err != nil {
-					return errors.Wrapf(err, "rabbit:Failed to reconnect to rabbit after %v tries, first failing to %+v", try+1, err)
+					firstError = errors.Wrapf(err, "conn.Channel Failed after try %v", try)
 				}
 				continue
 			}
@@ -69,12 +88,15 @@ func (re *RabbitExchangeImpl) SendTo(name, exchangeType string, durable, autoDel
 			defer func() {
 				if ch != nil {
 					err := ch.Close()
-
 					if err != nil {
 						log.Printf("rabbit:Emit Close Channel Failed %+v", err)
 					}
 				}
 			}()
+
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
 
 			err = ch.ExchangeDeclare(
 				name,         // name
@@ -88,20 +110,17 @@ func (re *RabbitExchangeImpl) SendTo(name, exchangeType string, durable, autoDel
 
 			if err != nil {
 				if firstError == nil {
-					firstError = errors.Wrapf(err, "ch.ExchangeDeclare Failed after try %v", try+1)
-				}
-				conn, err = re.newEventConnection(conn, re.rabbitIni)
-				if err != nil {
-					return errors.Wrapf(err, "rabbit:Failed to reconnect to rabbit after %v tries, first failing to %+v", try+1, err)
+					firstError = errors.Wrapf(err, "ch.ExchangeDeclare Failed after try %v", try)
 				}
 				continue
 			}
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
 
-			var dm uint8
+			dm := amqp.Transient
 			if durable {
 				dm = amqp.Persistent
-			} else {
-				dm = amqp.Transient
 			}
 
 			err = ch.Publish(
@@ -114,14 +133,9 @@ func (re *RabbitExchangeImpl) SendTo(name, exchangeType string, durable, autoDel
 					Body:         message,
 					DeliveryMode: dm,
 				})
-
 			if err != nil {
 				if firstError == nil {
-					firstError = errors.Wrapf(err, "ch.Publish Failed after try %v", try+1)
-				}
-				conn, err = re.newEventConnection(conn, re.rabbitIni)
-				if err != nil {
-					return errors.Wrapf(err, "rabbit:Failed to reconnect to rabbit after %v tries, first failing to %+v", try+1, err)
+					firstError = errors.Wrapf(err, "ch.Publish Failed after try %v", try)
 				}
 				continue
 			}
@@ -129,7 +143,8 @@ func (re *RabbitExchangeImpl) SendTo(name, exchangeType string, durable, autoDel
 			return nil
 
 		}
-		return errors.Wrapf(firstError, "rabbit:Failed to send message after %v tries", try+1)
+
+		return errors.Wrapf(firstError, "rabbit:Failed to send message after %v tries", try)
 	}
 }
 
@@ -188,9 +203,15 @@ func (re *RabbitExchangeImpl) Receive(exchange ExchangeSettings, queue QueueSett
 		}
 
 		ch, err := conn.Channel()
-
 		if err != nil {
 			return nil, nil, func() {}, err
+		}
+
+		closeChan := func() {
+			err = ch.Close()
+			if err != nil {
+				log.Printf("rabbit:ProcessMessage:Consume Close Channel Failed. Reason: %+v", err)
+			}
 		}
 
 		if queue.Prefetch == 0 {
@@ -212,12 +233,7 @@ func (re *RabbitExchangeImpl) Receive(exchange ExchangeSettings, queue QueueSett
 		)
 
 		if err != nil {
-			return nil, nil, func() {
-				err = ch.Close()
-				if err != nil {
-					log.Printf("rabbit:ProcessMessage:Consume Close Channel Failed. Reason: %+v", err)
-				}
-			}, err
+			return nil, nil, closeChan, err
 		}
 
 		q, err := ch.QueueDeclare(
@@ -231,12 +247,7 @@ func (re *RabbitExchangeImpl) Receive(exchange ExchangeSettings, queue QueueSett
 
 		if err != nil {
 			log.Printf("rabbit:ProcessMessage:QueueDeclare Failed. Reason: %+v", err)
-			return nil, nil, func() {
-				err = ch.Close()
-				if err != nil {
-					log.Printf("rabbit:ProcessMessage:Consume Close Channel Failed. Reason: %+v", err)
-				}
-			}, err
+			return nil, nil, closeChan, err
 		}
 
 		err = ch.QueueBind(
@@ -249,12 +260,7 @@ func (re *RabbitExchangeImpl) Receive(exchange ExchangeSettings, queue QueueSett
 
 		if err != nil {
 			log.Printf("rabbit:ProcessMessage:QueueBind Failed. Reason: %+v", err)
-			return nil, nil, func() {
-				err = ch.Close()
-				if err != nil {
-					log.Printf("rabbit:ProcessMessage:Consume Close Channel Failed. Reason: %+v", err)
-				}
-			}, err
+			return nil, nil, closeChan, err
 		}
 
 		msgs, err := ch.Consume(
@@ -270,24 +276,14 @@ func (re *RabbitExchangeImpl) Receive(exchange ExchangeSettings, queue QueueSett
 		if err != nil {
 			log.Printf("rabbit:ProcessMessage:Consume Failed. Reason: %+v", err)
 
-			return nil, nil, func() {
-				err = ch.Close()
-				if err != nil {
-					log.Printf("rabbit:ProcessMessage:Consume Close Channel Failed. Reason: %+v", err)
-				}
-			}, err
+			return nil, nil, closeChan, err
 		}
 
 		//We buffer the errors, so that when we are not processing the error message (like while shutting down) the channel can still close.
 		errChan := make(chan *amqp.Error, 1)
 		ch.NotifyClose(errChan)
 
-		return msgs, errChan, func() {
-			err = ch.Close()
-			if err != nil {
-				log.Printf("rabbit:ProcessMessage:Consume Close Channel Failed. Reason: %+v", err)
-			}
-		}, nil
+		return msgs, errChan, closeChan, nil
 	}
 
 	msgs, errChan, closer, err := getChannel()
@@ -303,7 +299,7 @@ func (re *RabbitExchangeImpl) Receive(exchange ExchangeSettings, queue QueueSett
 				select {
 				case m := <-msgs:
 					go func(m amqp.Delivery) {
-						err = handler(m.Body)
+						err = handler(context.Background(), m.Body)
 						if err != nil {
 							log.Printf("Error handling rabbit message Exchange: %s Queue: %s Body: [%s] %+v\n", exchange.Name, queue.Name, m.Body, err)
 							err = m.Nack(false, false)
@@ -329,7 +325,7 @@ func (re *RabbitExchangeImpl) Receive(exchange ExchangeSettings, queue QueueSett
 					}
 					log.Printf("rabbit:ProcessMessages Rabbit Failed: %d - %s", e.Code, e.Reason)
 
-					if e.Code == 320 || e.Code == 501 {
+					if e.Code == amqp.ConnectionForced || e.Code == amqp.FrameError {
 						// for now only care about total connection loss
 						closer()
 						for {
@@ -376,6 +372,7 @@ func (re *RabbitExchangeImpl) readEventConnection() *amqp.Connection {
  It still needs to lock rabbitConnectionMutex that is used for faster read access
 */
 func (re *RabbitExchangeImpl) newEventConnection(old *amqp.Connection, rabbitIni RabbitConfig) (*amqp.Connection, error) {
+
 	timer := time.NewTimer(rabbitIni.GetConnectTimeout())
 	defer timer.Stop()
 	select {
@@ -420,11 +417,18 @@ func Fanout(listen func(MessageHandleFunc) error) (func(MessageHandleFunc) func(
 	lock := sync.RWMutex{}
 	var counter int64 = 0
 
-	err := listen(func(message []byte) error {
+	err := listen(func(ctx context.Context, message []byte) error {
+		if ctx == nil {
+			return ErrNilContext
+		}
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+
 		lock.RLock()
 		defer lock.RUnlock()
 		for _, listener := range listeners {
-			err := listener(message)
+			err := listener(ctx, message)
 			if err != nil {
 				return err
 			}
