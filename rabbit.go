@@ -279,6 +279,13 @@ func init() {
 
 func UnPacker(handler MessageHandleFunc) MessageHandleFunc {
 	return func(ctx context.Context, packed []byte) error {
+		if ctx == nil {
+			return ErrNilContext
+		}
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+
 		messages := make([]string, 0)
 		err := json.Unmarshal(packed, &messages)
 		if err != nil {
@@ -296,6 +303,13 @@ func UnPacker(handler MessageHandleFunc) MessageHandleFunc {
 
 func PackerString(handler MessageHandleFunc) func(ctx context.Context, messages []string) error {
 	return func(ctx context.Context, messages []string) error {
+		if ctx == nil {
+			return ErrNilContext
+		}
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+
 		data, err := json.Marshal(messages)
 		if err != nil {
 			return err

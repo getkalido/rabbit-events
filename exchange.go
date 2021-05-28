@@ -418,6 +418,13 @@ func Fanout(listen func(MessageHandleFunc) error) (func(MessageHandleFunc) func(
 	var counter int64 = 0
 
 	err := listen(func(ctx context.Context, message []byte) error {
+		if ctx == nil {
+			return ErrNilContext
+		}
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+
 		lock.RLock()
 		defer lock.RUnlock()
 		for _, listener := range listeners {
