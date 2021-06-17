@@ -87,25 +87,15 @@ func (rem *ImplRabbitEventHandler) Emit(path string) EventEmitter {
 		}
 
 		callers := make([]uintptr, 30)
-		numCallers := runtime.Callers(1, callers)
+		numCallers := runtime.Callers(2, callers)
 		if numCallers > 1 {
 			frames := runtime.CallersFrames(callers)
-			for {
-				first, more := frames.Next()
+			first, _ := frames.Next()
+			event.Source.Originator += first.File + ":" + fmt.Sprint(first.Line) + " " + first.Function + "\n"
+		}
 
-				if ctx.Err() != nil {
-					return ctx.Err()
-				}
-
-				event.Source.Originator += first.File + ":" + fmt.Sprint(first.Line) + " " + first.Function + "\n"
-
-				if !more {
-					break
-				}
-			}
-			if ctx.Err() != nil {
-				return ctx.Err()
-			}
+		if ctx.Err() != nil {
+			return ctx.Err()
 		}
 
 		data, err := json.Marshal(event)
