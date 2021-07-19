@@ -299,7 +299,9 @@ func (re *RabbitExchangeImpl) Receive(exchange ExchangeSettings, queue QueueSett
 				select {
 				case m := <-msgs:
 					go func(m amqp.Delivery) {
-						err := handler(context.Background(), m.Body)
+						ctx, cancel := context.WithCancel(context.Background())
+						defer cancel()
+						err := handler(ctx, m.Body)
 						if err != nil {
 							log.Printf("Error handling rabbit message Exchange: %s Queue: %s Body: [%s] %+v\n", exchange.Name, queue.Name, m.Body, err)
 							err = m.Nack(false, false)
