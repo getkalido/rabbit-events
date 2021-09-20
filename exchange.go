@@ -304,7 +304,11 @@ func (re *RabbitExchangeImpl) Receive(exchange ExchangeSettings, queue QueueSett
 						err := handler(ctx, m.Body)
 						if err != nil {
 							log.Printf("Error handling rabbit message Exchange: %s Queue: %s Body: [%s] %+v\n", exchange.Name, queue.Name, m.Body, err)
-							err = m.Nack(false, false)
+							shouldRequeue, _ := IsEventProcessingError(err)
+							// If there was an error processing and the message
+							// has never been redelivered before
+							shouldRequeue = shouldRequeue && !m.Redelivered
+							err = m.Nack(false, shouldRequeue)
 							if err != nil {
 								log.Printf("Error Nack rabbit message %+v\n", err)
 							}
