@@ -198,7 +198,6 @@ type QueueSettings struct {
 }
 
 func (re *RabbitExchangeImpl) Receive(exchange ExchangeSettings, queue QueueSettings) (func(MessageHandleFunc) error, func(), error) {
-	requeueQueueName := fmt.Sprintf("%s-%s", queue.Name, retryQueueNameSuffix)
 	getChannel := func() (*amqp.Channel, <-chan amqp.Delivery, chan *amqp.Error, func(), error) {
 		conn, err := re.getEventConnection()
 
@@ -274,22 +273,6 @@ func (re *RabbitExchangeImpl) Receive(exchange ExchangeSettings, queue QueueSett
 			log.Printf("rabbit:ProcessMessage:QueueDeclare Failed. Reason: %+v", err)
 			return nil, nil, nil, closeChan, err
 		}
-		requeueQueue, err := ch.QueueDeclare(
-			requeueQueueName, // name
-			queue.Durable,    // durable
-			queue.AutoDelete, // delete when unused
-			queue.Exclusive,  // exclusive
-			queue.NoWait,     // no-wait
-			map[string]interface{}{
-				"x-dead-letter-exchange":    exchange.Name,
-				"x-dead-letter-routing-key": queue.RoutingKey,
-			}, // args
-		)
-
-		if err != nil {
-			log.Printf("rabbit:ProcessMessage:QueueDeclare Failed. Reason: %+v", err)
-			return nil, nil, nil, closeChan, err
-		}
 
 		err = ch.QueueBind(
 			q.Name,           // queue name
@@ -304,17 +287,37 @@ func (re *RabbitExchangeImpl) Receive(exchange ExchangeSettings, queue QueueSett
 			return nil, nil, nil, closeChan, err
 		}
 
-		err = ch.QueueBind(
-			requeueQueue.Name, // queue name
-			requeueQueue.Name, // routing key
-			exchange.Name,     // exchange name
-			queue.NoWait,      // no-wait
-			queue.BindArgs,    //args
-		)
+		for i := 0; i < maxRequeueNo; i++ {
+			expiration := fmt.Sprintf("%v", int(math.Pow(10.0, float64(i+1))*1000))
+			requeueQueue, err := ch.QueueDeclare(
+				getRequeueQueueName(queue.Name, expiration), // name
+				queue.Durable,    // durable
+				queue.AutoDelete, // delete when unused
+				queue.Exclusive,  // exclusive
+				queue.NoWait,     // no-wait
+				map[string]interface{}{
+					"x-dead-letter-exchange":    exchange.Name,
+					"x-dead-letter-routing-key": queue.RoutingKey,
+				}, // args
+			)
 
-		if err != nil {
-			log.Printf("rabbit:ProcessMessage:QueueBind Failed. Reason: %+v", err)
-			return nil, nil, nil, closeChan, err
+			if err != nil {
+				log.Printf("rabbit:ProcessMessage:QueueDeclare Failed. Reason: %+v", err)
+				return nil, nil, nil, closeChan, err
+			}
+
+			err = ch.QueueBind(
+				requeueQueue.Name, // queue name
+				requeueQueue.Name, // routing key
+				exchange.Name,     // exchange name
+				queue.NoWait,      // no-wait
+				queue.BindArgs,    //args
+			)
+
+			if err != nil {
+				log.Printf("rabbit:ProcessMessage:QueueBind Failed. Reason: %+v", err)
+				return nil, nil, nil, closeChan, err
+			}
 		}
 
 		msgs, err := ch.Consume(
@@ -370,17 +373,18 @@ func (re *RabbitExchangeImpl) Receive(exchange ExchangeSettings, queue QueueSett
 								noRequeues, ok := requeuesObj.(int)
 								if ok && noRequeues < maxRequeueNo {
 									noRequeues++
+									expiration := fmt.Sprintf("%v", int(math.Pow(10.0, float64(noRequeues))*1000))
 									err = channel.Publish(
 										retryExchangeName, // exchange
-										requeueQueueName,  // routing key
-										false,             // mandatory
-										false,             // immediate
+										getRequeueQueueName(queue.Name, expiration), // routing key
+										false, // mandatory
+										false, // immediate
 										amqp.Publishing{
 											Headers:      map[string]interface{}{requeueHeaderKey: noRequeues},
 											ContentType:  "text/plain",
 											Body:         m.Body,
 											DeliveryMode: amqp.Transient,
-											Expiration:   fmt.Sprintf("%v", int(math.Pow(10.0, float64(noRequeues))*1000)),
+											Expiration:   expiration,
 										})
 									if err != nil {
 										log.Printf("Error Requeueing message %+v\n", err)
@@ -426,6 +430,10 @@ func (re *RabbitExchangeImpl) Receive(exchange ExchangeSettings, queue QueueSett
 		func() {
 			close(stop)
 		}, nil
+}
+
+func getRequeueQueueName(queueName string, expiry string) string {
+	return fmt.Sprintf("%s-%s-%s", queueName, retryQueueNameSuffix, expiry)
 }
 
 /*
