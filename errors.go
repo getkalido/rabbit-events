@@ -16,9 +16,7 @@ func NewEventProcessingError(text string) error {
 	return &EventProcessingError{text}
 }
 
-func IsEventProcessingError(err error) (bool, error) {
-	innerError := errors.Unwrap(err)
+func IsEventProcessingError(err error) bool {
 	var eval *EventProcessingError
-	is := errors.Is(err, eval)
-	return is, innerError
+	return errors.Is(err, eval)
 }
