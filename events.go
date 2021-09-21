@@ -28,7 +28,6 @@ type Event struct {
 type EventSource struct {
 	Context    map[string][]string
 	Originator string
-	RequeueNo  int
 }
 
 type EventEmitter func(ctx context.Context, action ActionType, context map[string][]string, id int64, old, state interface{}) error
