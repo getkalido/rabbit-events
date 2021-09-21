@@ -369,13 +369,14 @@ func (re *RabbitExchangeImpl) Receive(exchange ExchangeSettings, queue QueueSett
 								}
 								noRequeues, ok := requeuesObj.(int)
 								if ok && noRequeues < maxRequeueNo {
+									noRequeues++
 									err = channel.Publish(
 										retryExchangeName, // exchange
 										requeueQueueName,  // routing key
 										false,             // mandatory
 										false,             // immediate
 										amqp.Publishing{
-											Headers:      map[string]interface{}{requeueHeaderKey: noRequeues + 1},
+											Headers:      map[string]interface{}{requeueHeaderKey: noRequeues},
 											ContentType:  "text/plain",
 											Body:         m.Body,
 											DeliveryMode: amqp.Transient,
