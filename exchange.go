@@ -14,11 +14,11 @@ import (
 )
 
 const (
-	maxRequeueNo         = 3
-	requeueHeaderKey     = "requeue-no"
-	retryQueueNameSuffix = "retry"
-	retryExchangeName    = "retry-exchange"
-	retryExchangeType    = "direct"
+	maxRequeueNo            = 3
+	requeueHeaderKey        = "requeue-no"
+	retryQueueNameSuffix    = "retry"
+	retryExchangeNameSuffix = "retry"
+	retryExchangeType       = "direct"
 )
 
 type RabbitExchange interface {
@@ -247,7 +247,7 @@ func (re *RabbitExchangeImpl) Receive(exchange ExchangeSettings, queue QueueSett
 		}
 
 		err = ch.ExchangeDeclare(
-			retryExchangeName, // name
+			fmt.Sprintf("%s-%s", exchange.Name, retryExchangeNameSuffix), // name
 			retryExchangeType, // type
 			true,              // durable
 			false,             // delete when unused
@@ -375,8 +375,8 @@ func (re *RabbitExchangeImpl) Receive(exchange ExchangeSettings, queue QueueSett
 									noRequeues++
 									expiration := fmt.Sprintf("%v", int(math.Pow(10.0, float64(noRequeues))*1000))
 									err = channel.Publish(
-										retryExchangeName, // exchange
-										getRequeueQueueName(queue.Name, expiration), // routing key
+										fmt.Sprintf("%s-%s", exchange.Name, retryExchangeNameSuffix), // exchange
+										getRequeueQueueName(queue.Name, expiration),                  // routing key
 										false, // mandatory
 										false, // immediate
 										amqp.Publishing{
