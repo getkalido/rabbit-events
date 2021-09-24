@@ -146,7 +146,7 @@ var _ = Describe("RabbitEvents", func() {
 		})
 	})
 
-	FDescribe("Exchange ReceiveFrom", func() {
+	Describe("Exchange ReceiveFrom", func() {
 		It("Should define 3 retry queues, one for each delay time", func() {
 			ctrl := gomock.NewController(GinkgoT())
 			defer ctrl.Finish()
