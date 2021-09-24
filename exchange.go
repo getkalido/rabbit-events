@@ -246,8 +246,9 @@ func (re *RabbitExchangeImpl) Receive(exchange ExchangeSettings, queue QueueSett
 			return nil, nil, nil, closeChan, err
 		}
 
+		retryExchangeName := fmt.Sprintf("%s-%s", exchange.Name, retryExchangeNameSuffix)
 		err = ch.ExchangeDeclare(
-			fmt.Sprintf("%s-%s", exchange.Name, retryExchangeNameSuffix), // name
+			retryExchangeName, // name
 			retryExchangeType, // type
 			true,              // durable
 			false,             // delete when unused
@@ -288,16 +289,18 @@ func (re *RabbitExchangeImpl) Receive(exchange ExchangeSettings, queue QueueSett
 		}
 
 		for i := 0; i < maxRequeueNo; i++ {
-			expiration := fmt.Sprintf("%v", int(math.Pow(10.0, float64(i+1))*1000))
+			expiration := int(math.Pow(10.0, float64(i+1)) * 1000)
+			expirationStr := fmt.Sprintf("%v", expiration)
 			requeueQueue, err := ch.QueueDeclare(
-				getRequeueQueueName(queue.Name, expiration), // name
+				getRequeueQueueName(queue.Name, expirationStr), // name
 				queue.Durable,    // durable
 				queue.AutoDelete, // delete when unused
-				queue.Exclusive,  // exclusive
+				false,            // exclusive
 				queue.NoWait,     // no-wait
 				map[string]interface{}{
 					"x-dead-letter-exchange":    exchange.Name,
 					"x-dead-letter-routing-key": queue.RoutingKey,
+					"x-message-ttl":             expiration,
 				}, // args
 			)
 
@@ -309,7 +312,7 @@ func (re *RabbitExchangeImpl) Receive(exchange ExchangeSettings, queue QueueSett
 			err = ch.QueueBind(
 				requeueQueue.Name, // queue name
 				requeueQueue.Name, // routing key
-				exchange.Name,     // exchange name
+				retryExchangeName, // exchange name
 				queue.NoWait,      // no-wait
 				queue.BindArgs,    //args
 			)
@@ -361,16 +364,17 @@ func (re *RabbitExchangeImpl) Receive(exchange ExchangeSettings, queue QueueSett
 						err := handler(ctx, m.Body)
 						if err != nil {
 							log.Printf("Error handling rabbit message Exchange: %s Queue: %s Body: [%s] %+v\n", exchange.Name, queue.Name, m.Body, err)
+							isProcessingError := IsEventProcessingError(err)
 							err = m.Nack(false, false)
 							if err != nil {
 								log.Printf("Error Nack rabbit message %+v\n", err)
 							}
-							if IsEventProcessingError(err) {
+							if isProcessingError {
 								requeuesObj, ok := m.Headers[requeueHeaderKey]
 								if !ok {
 									return
 								}
-								noRequeues, ok := requeuesObj.(int)
+								noRequeues, ok := requeuesObj.(int32)
 								if ok && noRequeues < maxRequeueNo {
 									noRequeues++
 									expiration := fmt.Sprintf("%v", int(math.Pow(10.0, float64(noRequeues))*1000))
@@ -384,7 +388,6 @@ func (re *RabbitExchangeImpl) Receive(exchange ExchangeSettings, queue QueueSett
 											ContentType:  "text/plain",
 											Body:         m.Body,
 											DeliveryMode: amqp.Transient,
-											Expiration:   expiration,
 										})
 									if err != nil {
 										log.Printf("Error Requeueing message %+v\n", err)

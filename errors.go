@@ -12,6 +12,11 @@ func (e *EventProcessingError) Error() string {
 	return e.s
 }
 
+func (e *EventProcessingError) Is(tgt error) bool {
+	_, ok := tgt.(*EventProcessingError)
+	return ok
+}
+
 func NewEventProcessingError(text string) error {
 	return &EventProcessingError{text}
 }
