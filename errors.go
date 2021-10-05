@@ -2,26 +2,34 @@ package rabbitevents
 
 import "errors"
 
+type EventProcessingError struct {
+	err error
+}
+
 var ErrNilContext = errors.New("received nil context")
 
-type EventProcessingError struct {
-	s string
+func NewEventProcessingError(err error) error {
+	return &EventProcessingError{err}
 }
 
 func (e *EventProcessingError) Error() string {
-	return e.s
+	return e.err.Error()
 }
 
-func (e *EventProcessingError) Is(tgt error) bool {
-	_, ok := tgt.(*EventProcessingError)
-	return ok
+func (e *EventProcessingError) Temporary() bool {
+	return true
 }
 
-func NewEventProcessingError(text string) error {
-	return &EventProcessingError{text}
-}
-
-func IsEventProcessingError(err error) bool {
-	var eval *EventProcessingError
-	return errors.Is(err, eval)
+func IsTemporaryError(err error) bool {
+	//If the eror was created by status.Errorf, then use that code.
+	if err, ok := err.(interface {
+		Temporary() bool
+	}); ok {
+		return err.Temporary()
+	}
+	nestedErr := errors.Unwrap(err)
+	if nestedErr != nil {
+		return IsTemporaryError(nestedErr)
+	}
+	return false
 }
