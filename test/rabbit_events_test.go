@@ -3,8 +3,6 @@ package test
 import (
 	"context"
 	"errors"
-	"fmt"
-	"math"
 	"sync"
 	"time"
 
@@ -14,6 +12,22 @@ import (
 
 	. "github.com/getkalido/rabbit-events"
 )
+
+type TestError struct {
+	err error
+}
+
+func NewTestError(err error) error {
+	return &TestError{err}
+}
+
+func (e *TestError) Error() string {
+	return e.err.Error()
+}
+
+func (e *TestError) Temporary() bool {
+	return true
+}
 
 var _ = Describe("RabbitEvents", func() {
 
@@ -147,45 +161,6 @@ var _ = Describe("RabbitEvents", func() {
 	})
 
 	Describe("Exchange ReceiveFrom", func() {
-		It("Should define 3 retry queues, one for each delay time", func() {
-			ctrl := gomock.NewController(GinkgoT())
-			defer ctrl.Finish()
-			mockConfig := NewMockRabbitConfig(ctrl)
-			mockConfig.EXPECT().GetHost().Return("localhost:5672")
-			mockConfig.EXPECT().GetUserName().Return("guest")
-			mockConfig.EXPECT().GetPassword().Return("guest")
-			mockConfig.EXPECT().GetConnectTimeout().Return(time.Second * 5)
-			exchange := NewRabbitExchange(mockConfig)
-
-			_, closeHandler, err := exchange.ReceiveFrom(
-				"test-exchange",
-				ExchangeTypeTopic,
-				false,
-				true,
-				"test.queue",
-				"listener",
-			)
-			Expect(err).To(BeNil())
-			defer closeHandler()
-			// There's no easy way to test that queues got created in rabbit
-			// So let's try defining those that should already be there
-			// but with diferent attributes, so this should error if the queue
-			// was defined correctly
-			retryExchangeName := "test-exchange-retry"
-			for i := 0; i < 3; i++ {
-				expiration := fmt.Sprintf("%v", int(math.Pow(10.0, float64(i+1))*1000))
-				queueName := fmt.Sprintf("listener-retry-%s", expiration)
-				_, _, err := exchange.ReceiveFrom(
-					retryExchangeName,
-					ExchangeTypeTopic,
-					false,
-					false,
-					"test.queue",
-					queueName,
-				)
-				Expect(err).To(Not(BeNil()))
-			}
-		})
 		It("Should requeue the message once within a 10 seconds window if a processing error is encountered", func() {
 			ctrl := gomock.NewController(GinkgoT())
 			defer ctrl.Finish()
@@ -207,10 +182,12 @@ var _ = Describe("RabbitEvents", func() {
 			Expect(err).To(BeNil())
 			defer closeHandler()
 			replies := make(chan struct{})
+			doOnce := make(chan struct{}, 1)
 			go func() {
 				handler(func(ctx context.Context, message []byte) (err error) {
 					replies <- struct{}{}
-					return NewEventProcessingError("Whaaaaa?")
+					doOnce <- struct{}{}
+					return NewEventProcessingError(errors.New("Whaaaaaa"))
 				})
 			}()
 
@@ -232,7 +209,56 @@ var _ = Describe("RabbitEvents", func() {
 			}
 			Expect(noReplies).To(Equal(2))
 		})
-		It("Should not reuqueue the message if another type of error is encountered", func() {
+		It("Should requeue the message once within a 10 seconds window if another type of temporary error is enountered", func() {
+
+			ctrl := gomock.NewController(GinkgoT())
+			defer ctrl.Finish()
+			mockConfig := NewMockRabbitConfig(ctrl)
+			mockConfig.EXPECT().GetHost().Return("localhost:5672")
+			mockConfig.EXPECT().GetUserName().Return("guest")
+			mockConfig.EXPECT().GetPassword().Return("guest")
+			mockConfig.EXPECT().GetConnectTimeout().Return(time.Second * 5)
+			exchange := NewRabbitExchange(mockConfig)
+
+			handler, closeHandler, err := exchange.ReceiveFrom(
+				"test-exchange",
+				ExchangeTypeTopic,
+				false,
+				true,
+				"test.queue",
+				"requeue-test",
+			)
+			Expect(err).To(BeNil())
+			defer closeHandler()
+			replies := make(chan struct{})
+			doOnce := make(chan struct{}, 1)
+			go func() {
+				handler(func(ctx context.Context, message []byte) (err error) {
+					replies <- struct{}{}
+					doOnce <- struct{}{}
+					return NewTestError(errors.New("This should result in a requeueing as well"))
+				})
+			}()
+
+			sendFn := exchange.SendTo("test-exchange", ExchangeTypeTopic, false, true, "test.queue")
+			sendFn(context.Background(), []byte{})
+			noReplies := 0
+			timer := time.NewTimer(13 * time.Second)
+		recvLoop:
+			for {
+				select {
+				case <-replies:
+					noReplies++
+					if noReplies == 2 {
+						break recvLoop
+					}
+				case <-timer.C:
+					break recvLoop
+				}
+			}
+			Expect(noReplies).To(Equal(2))
+		})
+		It("Should not reuqueue the message if an error that is not temporary is encountered", func() {
 			ctrl := gomock.NewController(GinkgoT())
 			defer ctrl.Finish()
 			mockConfig := NewMockRabbitConfig(ctrl)
