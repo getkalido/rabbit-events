@@ -4,12 +4,21 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"math"
 	"runtime"
 	"sync"
 	"time"
 
 	"github.com/pkg/errors"
 	"github.com/streadway/amqp"
+)
+
+const (
+	maxRequeueNo            = 3
+	requeueHeaderKey        = "requeue-no"
+	retryQueueNameSuffix    = "retry"
+	retryExchangeNameSuffix = "retry"
+	retryExchangeType       = "direct"
 )
 
 type RabbitExchange interface {
@@ -129,6 +138,7 @@ func (re *RabbitExchangeImpl) SendTo(name, exchangeType string, durable, autoDel
 				false, // mandatory
 				false, // immediate
 				amqp.Publishing{
+					Headers:      map[string]interface{}{requeueHeaderKey: 0},
 					ContentType:  "text/plain",
 					Body:         message,
 					DeliveryMode: dm,
@@ -188,23 +198,24 @@ type QueueSettings struct {
 }
 
 func (re *RabbitExchangeImpl) Receive(exchange ExchangeSettings, queue QueueSettings) (func(MessageHandleFunc) error, func(), error) {
-	getChannel := func() (<-chan amqp.Delivery, chan *amqp.Error, func(), error) {
+	retryExchangeName := fmt.Sprintf("%s-%s", exchange.Name, retryExchangeNameSuffix)
+	getChannel := func() (*amqp.Channel, <-chan amqp.Delivery, chan *amqp.Error, func(), error) {
 		conn, err := re.getEventConnection()
 
 		if err != nil {
-			return nil, nil, func() {}, err
+			return nil, nil, nil, func() {}, err
 		}
 
 		if conn.IsClosed() {
 			conn, err = re.newEventConnection(conn, re.rabbitIni)
 			if err != nil {
-				return nil, nil, func() {}, err
+				return nil, nil, nil, func() {}, err
 			}
 		}
 
 		ch, err := conn.Channel()
 		if err != nil {
-			return nil, nil, func() {}, err
+			return nil, nil, nil, func() {}, err
 		}
 
 		closeChan := func() {
@@ -233,7 +244,21 @@ func (re *RabbitExchangeImpl) Receive(exchange ExchangeSettings, queue QueueSett
 		)
 
 		if err != nil {
-			return nil, nil, closeChan, err
+			return nil, nil, nil, closeChan, err
+		}
+
+		err = ch.ExchangeDeclare(
+			retryExchangeName, // name
+			retryExchangeType, // type
+			true,              // durable
+			false,             // delete when unused
+			false,             // exclusive
+			false,             // no-wait
+			nil,               // args
+		)
+
+		if err != nil {
+			return nil, nil, nil, closeChan, err
 		}
 
 		q, err := ch.QueueDeclare(
@@ -247,7 +272,7 @@ func (re *RabbitExchangeImpl) Receive(exchange ExchangeSettings, queue QueueSett
 
 		if err != nil {
 			log.Printf("rabbit:ProcessMessage:QueueDeclare Failed. Reason: %+v", err)
-			return nil, nil, closeChan, err
+			return nil, nil, nil, closeChan, err
 		}
 
 		err = ch.QueueBind(
@@ -260,7 +285,7 @@ func (re *RabbitExchangeImpl) Receive(exchange ExchangeSettings, queue QueueSett
 
 		if err != nil {
 			log.Printf("rabbit:ProcessMessage:QueueBind Failed. Reason: %+v", err)
-			return nil, nil, closeChan, err
+			return nil, nil, nil, closeChan, err
 		}
 
 		msgs, err := ch.Consume(
@@ -276,17 +301,17 @@ func (re *RabbitExchangeImpl) Receive(exchange ExchangeSettings, queue QueueSett
 		if err != nil {
 			log.Printf("rabbit:ProcessMessage:Consume Failed. Reason: %+v", err)
 
-			return nil, nil, closeChan, err
+			return nil, nil, nil, closeChan, err
 		}
 
 		//We buffer the errors, so that when we are not processing the error message (like while shutting down) the channel can still close.
 		errChan := make(chan *amqp.Error, 1)
 		ch.NotifyClose(errChan)
 
-		return msgs, errChan, closeChan, nil
+		return ch, msgs, errChan, closeChan, nil
 	}
 
-	msgs, errChan, closer, err := getChannel()
+	channel, msgs, errChan, closer, err := getChannel()
 	if err != nil {
 		return nil, nil, err
 	}
@@ -304,9 +329,31 @@ func (re *RabbitExchangeImpl) Receive(exchange ExchangeSettings, queue QueueSett
 						err := handler(ctx, m.Body)
 						if err != nil {
 							log.Printf("Error handling rabbit message Exchange: %s Queue: %s Body: [%s] %+v\n", exchange.Name, queue.Name, m.Body, err)
+							isProcessingError := IsTemporaryError(err)
 							err = m.Nack(false, false)
 							if err != nil {
 								log.Printf("Error Nack rabbit message %+v\n", err)
+							}
+							if isProcessingError {
+								requeuesObj, ok := m.Headers[requeueHeaderKey]
+								if !ok {
+									return
+								}
+								noRequeues, ok := requeuesObj.(int32)
+								if ok && noRequeues < maxRequeueNo {
+									noRequeues++
+									err = requeueMessage(
+										channel,
+										queue,
+										exchange.Name,
+										retryExchangeName,
+										m.Body,
+										int(noRequeues),
+									)
+									if err != nil {
+										log.Printf("Error requeueing message %+v\n", err)
+									}
+								}
 							}
 							return
 						}
@@ -332,7 +379,7 @@ func (re *RabbitExchangeImpl) Receive(exchange ExchangeSettings, queue QueueSett
 						closer()
 						for {
 							time.Sleep(time.Millisecond * 250)
-							msgs, errChan, closer, err = getChannel()
+							channel, msgs, errChan, closer, err = getChannel()
 							if err != nil {
 								log.Printf("Error connecting to rabbit %+v\n", err)
 							} else {
@@ -347,6 +394,67 @@ func (re *RabbitExchangeImpl) Receive(exchange ExchangeSettings, queue QueueSett
 		func() {
 			close(stop)
 		}, nil
+}
+
+func requeueMessage(
+	channel *amqp.Channel,
+	queue QueueSettings,
+	exchangeName string,
+	retryExchangeName string,
+	body []byte,
+	noRequeues int,
+) error {
+	expiration := int(math.Pow(10.0, float64(noRequeues)) * 1000)
+	expirationStr := fmt.Sprintf("%v", expiration)
+	retryQueueName := getRequeueQueueName(queue.Name, expirationStr)
+	requeueQueue, err := channel.QueueDeclare(
+		retryQueueName,   // name
+		queue.Durable,    // durable
+		queue.AutoDelete, // delete when unused
+		false,            // exclusive
+		queue.NoWait,     // no-wait
+		map[string]interface{}{
+			"x-dead-letter-exchange":    exchangeName,
+			"x-dead-letter-routing-key": queue.RoutingKey,
+			"x-message-ttl":             expiration,
+		}, // args
+	)
+
+	if err != nil {
+		log.Printf("rabbit:requeueMessage:QueueDeclare Failed. Reason: %+v", err)
+		return err
+	}
+
+	err = channel.QueueBind(
+		requeueQueue.Name, // queue name
+		requeueQueue.Name, // routing key
+		retryExchangeName, // exchange name
+		queue.NoWait,      // no-wait
+		queue.Args,        // args
+	)
+
+	if err != nil {
+		log.Printf("rabbit:requeueMessage:QueueBind Failed. Reason: %+v", err)
+		return err
+	}
+
+	err = channel.Publish(
+		retryExchangeName,
+		retryQueueName, // routing key
+		false,          // mandatory
+		false,          // immediate
+		amqp.Publishing{
+			Headers:      map[string]interface{}{requeueHeaderKey: noRequeues},
+			ContentType:  "text/plain",
+			Body:         body,
+			DeliveryMode: amqp.Transient,
+		})
+
+	return err
+}
+
+func getRequeueQueueName(queueName string, expiry string) string {
+	return fmt.Sprintf("%s-%s-%s", queueName, retryQueueNameSuffix, expiry)
 }
 
 /*

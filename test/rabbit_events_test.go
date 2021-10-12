@@ -2,6 +2,7 @@ package test
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"time"
 
@@ -11,6 +12,22 @@ import (
 
 	. "github.com/getkalido/rabbit-events"
 )
+
+type TestError struct {
+	err error
+}
+
+func NewTestError(err error) error {
+	return &TestError{err}
+}
+
+func (e *TestError) Error() string {
+	return e.err.Error()
+}
+
+func (e *TestError) Temporary() bool {
+	return true
+}
 
 var _ = Describe("RabbitEvents", func() {
 
@@ -140,6 +157,152 @@ var _ = Describe("RabbitEvents", func() {
 			defer cancel()
 			err := emitter(ctx, Create, nil, 54, nil, nil)
 			Expect(err).To(BeNil())
+		})
+	})
+
+	Describe("Exchange ReceiveFrom", func() {
+		It("Should requeue the message once within a 10 seconds window if a processing error is encountered", func() {
+			ctrl := gomock.NewController(GinkgoT())
+			defer ctrl.Finish()
+			mockConfig := NewMockRabbitConfig(ctrl)
+			mockConfig.EXPECT().GetHost().Return("localhost:5672")
+			mockConfig.EXPECT().GetUserName().Return("guest")
+			mockConfig.EXPECT().GetPassword().Return("guest")
+			mockConfig.EXPECT().GetConnectTimeout().Return(time.Second * 5)
+			exchange := NewRabbitExchange(mockConfig)
+
+			handler, closeHandler, err := exchange.ReceiveFrom(
+				"test-exchange",
+				ExchangeTypeTopic,
+				false,
+				true,
+				"test.queue",
+				"requeue-test",
+			)
+			Expect(err).To(BeNil())
+			defer closeHandler()
+			replies := make(chan struct{})
+			doOnce := make(chan struct{}, 1)
+			go func() {
+				handler(func(ctx context.Context, message []byte) (err error) {
+					replies <- struct{}{}
+					doOnce <- struct{}{}
+					return NewEventProcessingError(errors.New("Whaaaaaa"))
+				})
+			}()
+
+			sendFn := exchange.SendTo("test-exchange", ExchangeTypeTopic, false, true, "test.queue")
+			sendFn(context.Background(), []byte{})
+			noReplies := 0
+			timer := time.NewTimer(13 * time.Second)
+		recvLoop:
+			for {
+				select {
+				case <-replies:
+					noReplies++
+					if noReplies == 2 {
+						break recvLoop
+					}
+				case <-timer.C:
+					break recvLoop
+				}
+			}
+			Expect(noReplies).To(Equal(2))
+		})
+		It("Should requeue the message once within a 10 seconds window if another type of temporary error is enountered", func() {
+
+			ctrl := gomock.NewController(GinkgoT())
+			defer ctrl.Finish()
+			mockConfig := NewMockRabbitConfig(ctrl)
+			mockConfig.EXPECT().GetHost().Return("localhost:5672")
+			mockConfig.EXPECT().GetUserName().Return("guest")
+			mockConfig.EXPECT().GetPassword().Return("guest")
+			mockConfig.EXPECT().GetConnectTimeout().Return(time.Second * 5)
+			exchange := NewRabbitExchange(mockConfig)
+
+			handler, closeHandler, err := exchange.ReceiveFrom(
+				"test-exchange",
+				ExchangeTypeTopic,
+				false,
+				true,
+				"test.queue",
+				"requeue-test",
+			)
+			Expect(err).To(BeNil())
+			defer closeHandler()
+			replies := make(chan struct{})
+			doOnce := make(chan struct{}, 1)
+			go func() {
+				handler(func(ctx context.Context, message []byte) (err error) {
+					replies <- struct{}{}
+					doOnce <- struct{}{}
+					return NewTestError(errors.New("This should result in a requeueing as well"))
+				})
+			}()
+
+			sendFn := exchange.SendTo("test-exchange", ExchangeTypeTopic, false, true, "test.queue")
+			sendFn(context.Background(), []byte{})
+			noReplies := 0
+			timer := time.NewTimer(13 * time.Second)
+		recvLoop:
+			for {
+				select {
+				case <-replies:
+					noReplies++
+					if noReplies == 2 {
+						break recvLoop
+					}
+				case <-timer.C:
+					break recvLoop
+				}
+			}
+			Expect(noReplies).To(Equal(2))
+		})
+		It("Should not reuqueue the message if an error that is not temporary is encountered", func() {
+			ctrl := gomock.NewController(GinkgoT())
+			defer ctrl.Finish()
+			mockConfig := NewMockRabbitConfig(ctrl)
+			mockConfig.EXPECT().GetHost().Return("localhost:5672")
+			mockConfig.EXPECT().GetUserName().Return("guest")
+			mockConfig.EXPECT().GetPassword().Return("guest")
+			mockConfig.EXPECT().GetConnectTimeout().Return(time.Second * 5)
+			exchange := NewRabbitExchange(mockConfig)
+
+			handler, closeHandler, err := exchange.ReceiveFrom(
+				"test-exchange",
+				ExchangeTypeTopic,
+				false,
+				true,
+				"test.queue",
+				"requeue-test",
+			)
+			Expect(err).To(BeNil())
+			defer closeHandler()
+			replies := make(chan struct{})
+			go func() {
+				handler(func(ctx context.Context, message []byte) (err error) {
+					replies <- struct{}{}
+					return errors.New("Whaaaa!")
+				})
+			}()
+
+			sendFn := exchange.SendTo("test-exchange", ExchangeTypeTopic, false, true, "test.queue")
+			sendFn(context.Background(), []byte{})
+			noReplies := 0
+			timer := time.NewTimer(13 * time.Second)
+		recvLoop:
+			for {
+				select {
+				case <-replies:
+					noReplies++
+					if noReplies == 2 {
+						break recvLoop
+					}
+				case <-timer.C:
+					break recvLoop
+				}
+			}
+			Expect(noReplies).To(Equal(1))
 		})
 	})
 })
