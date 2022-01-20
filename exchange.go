@@ -62,7 +62,7 @@ func (re *RabbitExchangeImpl) SendTo(name, exchangeType string, durable, autoDel
 	var chM sync.RWMutex
 
 	getConnection := func() (*amqp.Connection, error) {
-		currectConn := func() *amqp.Connection {
+		currentConn := func() *amqp.Connection {
 			connM.RLock()
 			defer connM.RUnlock()
 			if conn != nil && !conn.IsClosed() {
@@ -71,8 +71,8 @@ func (re *RabbitExchangeImpl) SendTo(name, exchangeType string, durable, autoDel
 			return nil
 		}()
 
-		if currectConn != nil {
-			return currectConn, nil
+		if currentConn != nil {
+			return currentConn, nil
 		}
 
 		return func() (*amqp.Connection, error) {
@@ -92,13 +92,13 @@ func (re *RabbitExchangeImpl) SendTo(name, exchangeType string, durable, autoDel
 	}
 
 	getChannel := func() (*amqp.Channel, int64, error) {
-		currenctChannel, currentVersion := func() (*amqp.Channel, int64) {
+		currentChannel, currentVersion := func() (*amqp.Channel, int64) {
 			chM.RLock()
 			defer chM.RUnlock()
 			return ch, version
 		}()
-		if currenctChannel != nil {
-			return currenctChannel, currentVersion, nil
+		if currentChannel != nil {
+			return currentChannel, currentVersion, nil
 		}
 
 		return func() (*amqp.Channel, int64, error) {
