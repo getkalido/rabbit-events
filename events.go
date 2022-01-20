@@ -67,6 +67,7 @@ func NewRabbitEventHandler(rabbitEx RabbitExchange, exchangeName string, prefetc
 }
 
 func (rem *ImplRabbitEventHandler) Emit(path string) EventEmitter {
+	messageSender := rem.rabbitEx.SendTo(rem.exchangeName, ExchangeTypeTopic, true, false, path)
 	return func(ctx context.Context, action ActionType, context map[string][]string, id int64, old, state interface{}) error {
 		if ctx == nil {
 			return ErrNilContext
@@ -108,7 +109,7 @@ func (rem *ImplRabbitEventHandler) Emit(path string) EventEmitter {
 			return ctx.Err()
 		}
 
-		return rem.rabbitEx.SendTo(rem.exchangeName, ExchangeTypeTopic, true, false, path)(ctx, data)
+		return messageSender(ctx, data)
 	}
 }
 

@@ -53,6 +53,100 @@ func (re *RabbitExchangeImpl) Close() error {
 }
 
 func (re *RabbitExchangeImpl) SendTo(name, exchangeType string, durable, autoDelete bool, key string) MessageHandleFunc {
+
+	var conn *amqp.Connection
+	var ch *amqp.Channel
+	var version int64 = 0
+
+	var connM sync.RWMutex
+	var chM sync.RWMutex
+
+	getConnection := func() (*amqp.Connection, error) {
+		currentConn := func() *amqp.Connection {
+			connM.RLock()
+			defer connM.RUnlock()
+			if conn != nil && !conn.IsClosed() {
+				return conn
+			}
+			return nil
+		}()
+
+		if currentConn != nil {
+			return currentConn, nil
+		}
+
+		return func() (*amqp.Connection, error) {
+			connM.Lock()
+			defer connM.Unlock()
+			if conn == nil || conn.IsClosed() {
+				var err error
+				conn, err = re.newEventConnection(conn, re.rabbitIni)
+				if err != nil {
+					return nil, errors.Wrapf(err, "rabbit:Failed to reconnect to rabbit  %+v", err)
+				}
+				ch = nil
+
+			}
+			return conn, nil
+		}()
+	}
+
+	getChannel := func() (*amqp.Channel, int64, error) {
+		currentChannel, currentVersion := func() (*amqp.Channel, int64) {
+			chM.RLock()
+			defer chM.RUnlock()
+			return ch, version
+		}()
+		if currentChannel != nil {
+			return currentChannel, currentVersion, nil
+		}
+
+		return func() (*amqp.Channel, int64, error) {
+			conn, err := getConnection()
+			if err != nil {
+				return nil, 0, err
+			}
+
+			chM.Lock()
+			defer chM.Unlock()
+
+			if ch == nil {
+				var err error
+				ch, err = conn.Channel()
+				if err != nil {
+					return nil, 0, err
+				}
+				version++
+				err = ch.ExchangeDeclare(
+					name,         // name
+					exchangeType, // type
+					durable,      // durable
+					autoDelete,   // delete when unused
+					false,        // exclusive
+					false,        // no-wait
+					nil,          // args
+				)
+
+				if err != nil {
+					return nil, 0, err
+				}
+			}
+			return ch, version, nil
+		}()
+	}
+
+	replaceChannel := func(oldVersion int64) {
+		chM.Lock()
+		defer chM.Unlock()
+		if oldVersion == version {
+			if ch != nil {
+				ch.Close()
+				ch = nil
+			}
+		}
+
+	}
+
 	return func(ctx context.Context, message []byte) error {
 		if ctx == nil {
 			return ErrNilContext
@@ -62,69 +156,19 @@ func (re *RabbitExchangeImpl) SendTo(name, exchangeType string, durable, autoDel
 			return ctx.Err()
 		}
 
-		conn, err := re.getEventConnection()
-		if err != nil {
-			return err
-		}
-
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-
 		var firstError error
-		var ch *amqp.Channel
 		var try int
 		for try = 1; try <= 3; try++ {
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
 
-			if conn.IsClosed() {
-				conn, err = re.newEventConnection(conn, re.rabbitIni)
-				if err != nil {
-					return errors.Wrapf(err, "rabbit:Failed to reconnect to rabbit after %v tries, first failing to %+v", try, err)
-				}
-			}
-
-			ch, err = conn.Channel()
+			ch, chVersion, err := getChannel()
 			if err != nil {
 				if firstError == nil {
-					firstError = errors.Wrapf(err, "conn.Channel Failed after try %v", try)
+					firstError = errors.Wrapf(err, "getChannel Failed after try %v", try)
 				}
 				continue
-			}
-
-			defer func() {
-				if ch != nil {
-					err := ch.Close()
-					if err != nil {
-						log.Printf("rabbit:Emit Close Channel Failed %+v", err)
-					}
-				}
-			}()
-
-			if ctx.Err() != nil {
-				return ctx.Err()
-			}
-
-			err = ch.ExchangeDeclare(
-				name,         // name
-				exchangeType, // type
-				durable,      // durable
-				autoDelete,   // delete when unused
-				false,        // exclusive
-				false,        // no-wait
-				nil,          // args
-			)
-
-			if err != nil {
-				if firstError == nil {
-					firstError = errors.Wrapf(err, "ch.ExchangeDeclare Failed after try %v", try)
-				}
-				continue
-			}
-			if ctx.Err() != nil {
-				return ctx.Err()
 			}
 
 			dm := amqp.Transient
@@ -147,6 +191,7 @@ func (re *RabbitExchangeImpl) SendTo(name, exchangeType string, durable, autoDel
 				if firstError == nil {
 					firstError = errors.Wrapf(err, "ch.Publish Failed after try %v", try)
 				}
+				replaceChannel(chVersion)
 				continue
 			}
 
@@ -316,7 +361,7 @@ func (re *RabbitExchangeImpl) Receive(exchange ExchangeSettings, queue QueueSett
 		return nil, nil, err
 	}
 
-	stop := make(chan interface{})
+	stop := make(chan struct{})
 	return func(handler MessageHandleFunc) error {
 			defer closer()
 			for {
