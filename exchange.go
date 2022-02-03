@@ -365,9 +365,23 @@ func (re *RabbitExchangeImpl) Receive(exchange ExchangeSettings, queue QueueSett
 	return func(handler MessageHandleFunc) error {
 			defer closer()
 			for {
+				// If the `msgs` channel is no longer valid, then we need to open a new one
+				// If that attempt fails, the channel will remain invalid, so we will try again, until we succeed
+				if msgs == nil {
+					channel, msgs, errChan, closer, err = getChannel()
+					if err != nil {
+						log.Printf("Cannot get a new channel, after message chanel got closed %+v\n", err)
+						time.Sleep(time.Second)
+					}
+				}
 
 				select {
-				case m := <-msgs:
+				case m, ok := <-msgs:
+					//if the channel is closed, we want to stop receiving on this one, and we need to open a new one
+					if !ok {
+						msgs = nil
+						continue
+					}
 					go func(m amqp.Delivery) {
 						ctx, cancel := context.WithCancel(context.Background())
 						defer cancel()
