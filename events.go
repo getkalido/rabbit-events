@@ -126,7 +126,7 @@ func (rem *ImplRabbitEventHandler) Consume(path string, typer ...func() interfac
 		Name:       "",
 		RoutingKey: path,
 		AutoDelete: true,
-		Exclusive:  true,
+		Exclusive:  false,
 		Prefetch:   rem.prefetchCount,
 	})
 	if err != nil {
