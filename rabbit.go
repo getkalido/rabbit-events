@@ -12,15 +12,16 @@ import (
 )
 
 const (
-	ExchangeTypeFanout = "fanout"
-	ExchangeTypeTopic  = "topic"
+	ExchangeTypeFanout  = "fanout"
+	ExchangeTypeTopic   = "topic"
+	ExchangeTypeHeaders = "headers"
 )
 
 type MessageHandler interface {
 	HandleMessage([]byte) error
 }
 
-type MessageHandleFunc func(context.Context, []byte) error
+type MessageHandleFunc func(context.Context, []byte, map[string]interface{}) error
 
 type RabbitConfig interface {
 	GetUserName() string
@@ -161,7 +162,7 @@ func ProcessDirectMessage(rabbitIni RabbitConfig, exchange, routingKey string, h
 }
 
 // SendChangeNotificationMessages Sends a bunch of messages on the change notification rabbit channel, without dialing everytime like a noob
-func SendChangeNotificationMessages(ctx context.Context, messages []string, channel string, rabbitIni RabbitConfig) {
+func SendChangeNotificationMessages(ctx context.Context, messages []string, channel string, rabbitIni RabbitConfig, headers map[string]interface{}) {
 
 	exchange := NewRabbitExchange(rabbitIni)
 
@@ -169,7 +170,7 @@ func SendChangeNotificationMessages(ctx context.Context, messages []string, chan
 
 	messageHandler := PackerString(exchange.SendTo(channel, ExchangeTypeFanout, false, true, ""))
 
-	err := messageHandler(ctx, messages)
+	err := messageHandler(ctx, messages, headers)
 	if err != nil {
 		log.Printf("Error sending rabbit messages %+v\n", err)
 	}
@@ -182,7 +183,7 @@ type RabbitBatcher struct {
 	QuiescenceTime     time.Duration
 	MaxDelay           time.Duration
 	MaxMessagesInBatch int
-	BatchSender        func(context.Context, []string, string, RabbitConfig)
+	BatchSender        func(context.Context, []string, string, RabbitConfig, map[string]interface{})
 	Config             RabbitConfig
 	Channel            string
 }
@@ -231,7 +232,7 @@ func (rb *RabbitBatcher) Process() {
 					quiescence.Reset(rb.QuiescenceTime)
 				}
 				if len(messages) >= rb.MaxMessagesInBatch {
-					rb.BatchSender(context.Background(), messages, rb.Channel, rb.Config)
+					rb.BatchSender(context.Background(), messages, rb.Channel, rb.Config, nil)
 					messages = messages[:0]
 					timeoutC = nil
 					quiescenceC = nil
@@ -239,14 +240,14 @@ func (rb *RabbitBatcher) Process() {
 			}
 		case <-timeoutC:
 			{
-				rb.BatchSender(context.Background(), messages, rb.Channel, rb.Config)
+				rb.BatchSender(context.Background(), messages, rb.Channel, rb.Config, nil)
 				messages = messages[:0]
 				timeoutC = nil
 				quiescenceC = nil
 			}
 		case <-quiescenceC:
 			{
-				rb.BatchSender(context.Background(), messages, rb.Channel, rb.Config)
+				rb.BatchSender(context.Background(), messages, rb.Channel, rb.Config, nil)
 				messages = messages[:0]
 				timeoutC = nil
 				quiescenceC = nil
@@ -254,7 +255,7 @@ func (rb *RabbitBatcher) Process() {
 		case <-rb.stop:
 			{
 				if len(messages) > 0 {
-					rb.BatchSender(context.Background(), messages, rb.Channel, rb.Config)
+					rb.BatchSender(context.Background(), messages, rb.Channel, rb.Config, nil)
 				}
 				return
 			}
@@ -278,7 +279,7 @@ func init() {
 }
 
 func UnPacker(handler MessageHandleFunc) MessageHandleFunc {
-	return func(ctx context.Context, packed []byte) error {
+	return func(ctx context.Context, packed []byte, headers map[string]interface{}) error {
 		if ctx == nil {
 			return ErrNilContext
 		}
@@ -292,7 +293,7 @@ func UnPacker(handler MessageHandleFunc) MessageHandleFunc {
 			return err
 		}
 		for _, val := range messages {
-			err = handler(ctx, []byte(val))
+			err = handler(ctx, []byte(val), headers)
 			if err != nil {
 				return err
 			}
@@ -301,8 +302,8 @@ func UnPacker(handler MessageHandleFunc) MessageHandleFunc {
 	}
 }
 
-func PackerString(handler MessageHandleFunc) func(ctx context.Context, messages []string) error {
-	return func(ctx context.Context, messages []string) error {
+func PackerString(handler MessageHandleFunc) func(ctx context.Context, messages []string, headers map[string]interface{}) error {
+	return func(ctx context.Context, messages []string, headers map[string]interface{}) error {
 		if ctx == nil {
 			return ErrNilContext
 		}
@@ -314,7 +315,7 @@ func PackerString(handler MessageHandleFunc) func(ctx context.Context, messages 
 		if err != nil {
 			return err
 		}
-		err = handler(ctx, data)
+		err = handler(ctx, data, headers)
 		if err != nil {
 			return err
 		}

@@ -5,24 +5,30 @@ import (
 	"encoding/json"
 	"fmt"
 	"runtime"
-	"sync"
+	"strconv"
 )
 
 type ActionType string
 
 const (
-	Create ActionType = "create"
-	Update ActionType = "update"
-	Delete ActionType = "delete"
+	Create               ActionType = "create"
+	Update               ActionType = "update"
+	Delete               ActionType = "delete"
+	EventPathHeaderKey              = "path"
+	EventIDHeaderKey                = "id"
+	EventActionHeaderKey            = "action"
+	HeaderExchangeSuffix            = "-headers"
 )
 
 type Event struct {
+	// Deprecated
 	Path   string
 	Action ActionType
 	Source EventSource
-	ID     int64
-	Old    interface{}
-	State  interface{}
+	// Deprecated
+	ID    int64
+	Old   interface{}
+	State interface{}
 }
 
 type EventSource struct {
@@ -31,6 +37,7 @@ type EventSource struct {
 }
 
 type EventEmitter func(ctx context.Context, action ActionType, context map[string][]string, id int64, old, state interface{}) error
+type MultiEventEmitter func(ctx context.Context, action ActionType, context map[string][]string, old, state interface{}, paths map[string]int64) error
 
 type Unsubscribe func()
 
@@ -43,6 +50,7 @@ type TargetedEventConsumer func(handler func(*Event)) (func(), error)
 
 type RabbitEventHandler interface {
 	Emit(path string) EventEmitter
+	EmitMultiple() MultiEventEmitter
 	Consume(path string, typer ...func() interface{}) (EventConsumer, error)
 }
 
@@ -50,7 +58,6 @@ type ImplRabbitEventHandler struct {
 	rabbitEx      RabbitExchange
 	exchangeName  string
 	prefetchCount int
-	stop          func()
 }
 
 const rabbitPrefetchForSingleQueue = 100
@@ -67,8 +74,16 @@ func NewRabbitEventHandler(rabbitEx RabbitExchange, exchangeName string, prefetc
 }
 
 func (rem *ImplRabbitEventHandler) Emit(path string) EventEmitter {
-	messageSender := rem.rabbitEx.SendTo(rem.exchangeName, ExchangeTypeTopic, true, false, path)
+	messageSender := rem.rabbitEx.SendTo(rem.exchangeName, ExchangeTypeHeaders, true, false, "")
 	return func(ctx context.Context, action ActionType, context map[string][]string, id int64, old, state interface{}) error {
+		strID := strconv.FormatInt(id, 10)
+		messageHeaders := map[string]interface{}{
+			fmt.Sprintf("%s.%s", path, strID): true,
+			path:                              true,
+			EventIDHeaderKey:                  strID,
+			EventPathHeaderKey:                path,
+			EventActionHeaderKey:              action,
+		}
 		if ctx == nil {
 			return ErrNilContext
 		}
@@ -109,35 +124,72 @@ func (rem *ImplRabbitEventHandler) Emit(path string) EventEmitter {
 			return ctx.Err()
 		}
 
-		return messageSender(ctx, data)
+		return messageSender(ctx, data, messageHeaders)
+	}
+}
+
+func (rem *ImplRabbitEventHandler) EmitMultiple() MultiEventEmitter {
+	messageSender := rem.rabbitEx.SendTo(rem.exchangeName, ExchangeTypeHeaders, true, false, "")
+	return func(ctx context.Context, action ActionType, context map[string][]string, old, state interface{}, paths map[string]int64) error {
+		messageHeaders := map[string]interface{}{
+			EventActionHeaderKey: action,
+		}
+		for k, v := range paths {
+			messageHeaders[k] = true
+			messageHeaders[fmt.Sprintf("%s.%d", k, v)] = true
+		}
+		if ctx == nil {
+			return ErrNilContext
+		}
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		event := Event{
+			Action: action,
+			Source: EventSource{
+				Context: context,
+			},
+			Old:   old,
+			State: state,
+		}
+
+		callers := make([]uintptr, 30)
+		numCallers := runtime.Callers(2, callers)
+		if numCallers > 1 {
+			frames := runtime.CallersFrames(callers)
+			first, _ := frames.Next()
+			event.Source.Originator += first.File + ":" + fmt.Sprint(first.Line) + " " + first.Function + "\n"
+		}
+
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+
+		data, err := json.Marshal(event)
+
+		if err != nil {
+			return err
+		}
+
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+
+		return messageSender(ctx, data, messageHeaders)
 	}
 }
 
 func (rem *ImplRabbitEventHandler) Consume(path string, typer ...func() interface{}) (EventConsumer, error) {
-	receive, stop, err := rem.rabbitEx.Receive(ExchangeSettings{
-		Name:         rem.exchangeName,
-		ExchangeType: ExchangeTypeTopic,
-		Durable:      true,
-		AutoDelete:   false,
-		Exclusive:    false,
-		NoWait:       false,
-		Args:         nil,
-	}, QueueSettings{
-		Name:       "",
-		RoutingKey: path,
-		AutoDelete: true,
-		Exclusive:  true,
-		Prefetch:   rem.prefetchCount,
-	})
-	if err != nil {
-		return nil, err
+
+	eo := &eventObserver{
+		path:          path,
+		exchangeName:  rem.exchangeName,
+		prefetchCount: rem.prefetchCount,
+		exchange:      rem.rabbitEx,
 	}
-	rem.stop = stop
-	eo := &eventObserver{}
 	for _, tr := range typer {
 		eo.typer = tr
 	}
-	go func() { _ = receive(eo.Change) }()
 
 	return eo, nil
 }
@@ -160,16 +212,14 @@ func Emit(ctx context.Context, rabbitIni *RabbitIni, path string, action ActionT
 }
 
 type eventObserver struct {
-	lock sync.RWMutex
-	//EventId -> listenerID -> listener
-	listeners            map[int64]map[int64]func(*Event)
-	nextListenerID       int64
-	typer                func() interface{}
-	nextGlobalListenerID int64
-	globalListeners      map[int64]func(*Event) //This is a default listener for all events
+	typer         func() interface{}
+	path          string
+	exchangeName  string
+	prefetchCount int
+	exchange      RabbitExchange
 }
 
-func (eo *eventObserver) Change(ctx context.Context, data []byte) error {
+func (eo *eventObserver) Change(ctx context.Context, data []byte, headers map[string]interface{}, handler func(*Event)) error {
 	if ctx == nil {
 		return ErrNilContext
 	}
@@ -191,60 +241,52 @@ func (eo *eventObserver) Change(ctx context.Context, data []byte) error {
 	if err != nil {
 		return err
 	}
-	eo.lock.RLock()
-	defer eo.lock.RUnlock()
-
-	for _, listener := range eo.listeners[e.ID] {
-		//If the listeners do a lot of work ,kicking these off in goroutines might be worth
-		listener(e)
-	}
-
-	for _, globalListener := range eo.globalListeners {
-		globalListener(e)
-	}
+	handler(e)
 
 	return nil
 }
 
 func (eo *eventObserver) Subscribe(ids []int64, handler func(*Event)) Unsubscribe {
-	eo.lock.Lock()
-	defer eo.lock.Unlock()
-	listenerID := eo.nextListenerID
-	eo.nextListenerID++
 
-	if eo.listeners == nil {
-		eo.listeners = make(map[int64]map[int64]func(*Event))
+	bindHeaders := map[string]interface{}{
+		"x-match": "any",
 	}
 
 	for _, id := range ids {
-		if _, ok := eo.listeners[id]; !ok {
-			eo.listeners[id] = make(map[int64]func(*Event))
-		}
-		eo.listeners[id][listenerID] = handler
+		bindHeaders[fmt.Sprintf("%s.%d", eo.path, id)] = true
 	}
-	return func() {
-		eo.lock.Lock()
-		defer eo.lock.Unlock()
-		for _, id := range ids {
-			delete(eo.listeners[id], listenerID)
-		}
+
+	if len(ids) == 0 {
+		bindHeaders[EventPathHeaderKey] = eo.path
 	}
+
+	// How do we deal with the error :(
+	receive, stop, _ := eo.exchange.Receive(ExchangeSettings{
+		Name:         eo.exchangeName,
+		ExchangeType: ExchangeTypeHeaders,
+		Durable:      true,
+		AutoDelete:   false,
+		Exclusive:    false,
+		NoWait:       false,
+		Args:         nil,
+	}, QueueSettings{
+		Name:       "",
+		RoutingKey: "",
+		AutoDelete: true,
+		Exclusive:  true,
+		Prefetch:   eo.prefetchCount,
+		BindArgs:   bindHeaders,
+	})
+
+	go func() {
+		_ = receive(func(ctx context.Context, data []byte, headers map[string]interface{}) error {
+			return eo.Change(ctx, data, headers, handler)
+		})
+	}()
+	return stop
 
 }
 
 func (eo *eventObserver) SubscribeUnfiltered(handler func(*Event)) Unsubscribe {
-	eo.lock.Lock()
-	defer eo.lock.Unlock()
-
-	listenerID := eo.nextGlobalListenerID
-	eo.nextGlobalListenerID++
-
-	eo.globalListeners = make(map[int64]func(*Event))
-
-	eo.globalListeners[listenerID] = handler
-	return func() {
-		eo.lock.Lock()
-		defer eo.lock.Unlock()
-		delete(eo.globalListeners, listenerID)
-	}
+	return eo.Subscribe(nil, handler)
 }

@@ -147,7 +147,7 @@ func (re *RabbitExchangeImpl) SendTo(name, exchangeType string, durable, autoDel
 
 	}
 
-	return func(ctx context.Context, message []byte) error {
+	return func(ctx context.Context, message []byte, headers map[string]interface{}) error {
 		if ctx == nil {
 			return ErrNilContext
 		}
@@ -176,13 +176,17 @@ func (re *RabbitExchangeImpl) SendTo(name, exchangeType string, durable, autoDel
 				dm = amqp.Persistent
 			}
 
+			messageHeaders := map[string]interface{}{requeueHeaderKey: 0}
+			for k, v := range headers {
+				messageHeaders[k] = v
+			}
 			err = ch.Publish(
 				name,  // exchange
-				key,   // routing key
+				"",    // routing key
 				false, // mandatory
 				false, // immediate
 				amqp.Publishing{
-					Headers:      map[string]interface{}{requeueHeaderKey: 0},
+					Headers:      messageHeaders,
 					ContentType:  "text/plain",
 					Body:         message,
 					DeliveryMode: dm,
@@ -385,7 +389,7 @@ func (re *RabbitExchangeImpl) Receive(exchange ExchangeSettings, queue QueueSett
 					go func(m amqp.Delivery) {
 						ctx, cancel := context.WithCancel(context.Background())
 						defer cancel()
-						err := handler(ctx, m.Body)
+						err := handler(ctx, m.Body, m.Headers)
 						if err != nil {
 							log.Printf("Error handling rabbit message Exchange: %s Queue: %s Body: [%s] %+v\n", exchange.Name, queue.Name, m.Body, err)
 							isProcessingError := IsTemporaryError(err)
@@ -586,7 +590,7 @@ func Fanout(listen func(MessageHandleFunc) error) (func(MessageHandleFunc) func(
 	lock := sync.RWMutex{}
 	var counter int64 = 0
 
-	err := listen(func(ctx context.Context, message []byte) error {
+	err := listen(func(ctx context.Context, message []byte, headers map[string]interface{}) error {
 		if ctx == nil {
 			return ErrNilContext
 		}
@@ -597,7 +601,7 @@ func Fanout(listen func(MessageHandleFunc) error) (func(MessageHandleFunc) func(
 		lock.RLock()
 		defer lock.RUnlock()
 		for _, listener := range listeners {
-			err := listener(ctx, message)
+			err := listener(ctx, message, headers)
 			if err != nil {
 				return err
 			}
