@@ -261,7 +261,27 @@ type QueueSettings struct {
 	Prefetch   int
 }
 
-func (re *RabbitExchangeImpl) Receive(exchange ExchangeSettings, queue QueueSettings) (func(MessageHandleFunc) error, func(), error) {
+func (re *RabbitExchangeImpl) Receive(
+	exchange ExchangeSettings,
+	queue QueueSettings,
+) (
+	func(MessageHandleFunc) error,
+	func(),
+	error,
+) {
+	handler, stop, _, err := re.ReceiveMultiple(exchange, queue)
+	return handler, stop, err
+}
+
+func (re *RabbitExchangeImpl) ReceiveMultiple(
+	exchange ExchangeSettings,
+	queue QueueSettings,
+) (
+	func(MessageHandleFunc) error,
+	func(),
+	func(routingKey string, bindArgs map[string]interface{}),
+	error,
+) {
 	retryExchangeName := fmt.Sprintf("%s-%s", exchange.Name, retryExchangeNameSuffix)
 	getChannel := func() (*amqp.Channel, <-chan amqp.Delivery, chan *amqp.Error, func(), error) {
 		conn, err := re.rabbitConsumeConnection.getEventConnection()
@@ -377,7 +397,7 @@ func (re *RabbitExchangeImpl) Receive(exchange ExchangeSettings, queue QueueSett
 
 	channel, msgs, errChan, closer, err := getChannel()
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 
 	stop := make(chan struct{})
@@ -426,6 +446,7 @@ func (re *RabbitExchangeImpl) Receive(exchange ExchangeSettings, queue QueueSett
 										exchange.Name,
 										retryExchangeName,
 										m.Body,
+										m.Headers,
 										int(noRequeues),
 									)
 									if err != nil {
@@ -471,7 +492,17 @@ func (re *RabbitExchangeImpl) Receive(exchange ExchangeSettings, queue QueueSett
 		},
 		func() {
 			close(stop)
-		}, nil
+		},
+		func(routingKey string, bindArgs map[string]interface{}) {
+			err = channel.QueueBind(
+				queue.Name,    // queue name
+				routingKey,    // routing key
+				exchange.Name, // exchange name
+				queue.NoWait,  // no-wait
+				bindArgs,      //args
+			)
+		},
+		nil
 }
 
 func requeueMessage(
@@ -480,6 +511,7 @@ func requeueMessage(
 	exchangeName string,
 	retryExchangeName string,
 	body []byte,
+	headers map[string]interface{},
 	noRequeues int,
 ) error {
 	expiration := int(math.Pow(10.0, float64(noRequeues)) * 1000)
@@ -503,6 +535,11 @@ func requeueMessage(
 		return err
 	}
 
+	if headers == nil {
+		headers = map[string]interface{}{}
+	}
+	headers[requeueHeaderKey] = noRequeues
+
 	err = channel.QueueBind(
 		requeueQueue.Name, // queue name
 		requeueQueue.Name, // routing key
@@ -522,7 +559,7 @@ func requeueMessage(
 		false,          // mandatory
 		false,          // immediate
 		amqp.Publishing{
-			Headers:      map[string]interface{}{requeueHeaderKey: noRequeues},
+			Headers:      headers,
 			ContentType:  "text/plain",
 			Body:         body,
 			DeliveryMode: amqp.Transient,
