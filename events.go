@@ -20,14 +20,12 @@ const (
 )
 
 type Event struct {
-	// Deprecated
 	Path   string
 	Action ActionType
 	Source EventSource
-	// Deprecated
-	ID    int64
-	Old   interface{}
-	State interface{}
+	ID     int64
+	Old    interface{}
+	State  interface{}
 }
 
 type EventSource struct {
@@ -46,7 +44,7 @@ type EventConsumer interface {
 }
 
 type MultiEventConsumer interface {
-	Subscribe(paths map[string][]int64, handler func(*Event)) Unsubscribe
+	Subscribe(paths map[string][]int64, handler func(*Event)) (Unsubscribe, error)
 }
 
 type TargetedEventConsumer func(handler func(*Event)) (func(), error)
@@ -313,7 +311,7 @@ func (eo *multiEventObserver) Change(ctx context.Context, data []byte, headers m
 func (eo *multiEventObserver) Subscribe(
 	paths map[string][]int64,
 	handler func(*Event),
-) Unsubscribe {
+) (Unsubscribe, error) {
 	bindHeaders := map[string]interface{}{
 		"x-match": "any",
 	}
@@ -329,7 +327,7 @@ func (eo *multiEventObserver) Subscribe(
 	}
 
 	// How do we deal with the error :(
-	receive, stop, _ := eo.exchange.Receive(ExchangeSettings{
+	receive, stop, err := eo.exchange.Receive(ExchangeSettings{
 		Name:         eo.exchangeName,
 		ExchangeType: ExchangeTypeHeaders,
 		Durable:      true,
@@ -346,10 +344,14 @@ func (eo *multiEventObserver) Subscribe(
 		BindArgs:   bindHeaders,
 	})
 
+	if err != nil {
+		return stop, err
+	}
+
 	go func() {
 		_ = receive(func(ctx context.Context, data []byte, headers map[string]interface{}) error {
 			return eo.Change(ctx, data, headers, handler)
 		})
 	}()
-	return stop
+	return stop, nil
 }
