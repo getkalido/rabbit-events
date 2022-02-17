@@ -25,6 +25,7 @@ type RabbitExchange interface {
 	SendTo(name, exchangeType string, durable, autoDelete bool, key string) MessageHandleFunc
 
 	ReceiveFrom(name, exchangeType string, durable, autoDelete bool, key string, clientName string) (func(MessageHandleFunc) error, func(), error)
+	ReceiveMultiple(exchange ExchangeSettings, queue QueueSettings) (func(MessageHandleFunc) error, func(), func(routingKey string, bindArgs map[string]interface{}), error)
 	Receive(exchange ExchangeSettings, queue QueueSettings) (func(MessageHandleFunc) error, func(), error)
 
 	Close() error

@@ -88,8 +88,10 @@ func (rem *ImplRabbitEventHandler) sendEvent(
 	lastPath := ""
 	lastID := int64(0)
 	for k, v := range paths {
-		messageHeaders[k] = true
-		messageHeaders[fmt.Sprintf("%s.%d", k, v)] = true
+		messageHeaders[k] = v
+		// Needing this for wildecard matches, if we want to capture events
+		// irrespective of ID
+		messageHeaders[fmt.Sprintf("%s-%s", EventPathHeaderKey, k)] = true
 		lastPath = k
 		lastID = v
 	}
@@ -235,17 +237,13 @@ func (eo *eventObserver) Subscribe(ids []int64, handler func(*Event)) Unsubscrib
 	bindHeaders := map[string]interface{}{
 		"x-match": "any",
 	}
-
-	for _, id := range ids {
-		bindHeaders[fmt.Sprintf("%s.%d", eo.defaultPath, id)] = true
-	}
-
+	// if no IDs were provided, listen for everything emitted on path
 	if len(ids) == 0 {
-		bindHeaders[EventPathHeaderKey] = eo.defaultPath
+		bindHeaders[fmt.Sprintf("%s-%s", EventPathHeaderKey, eo.defaultPath)] = true
 	}
 
 	// How do we deal with the error :(
-	receive, stop, _ := eo.exchange.Receive(ExchangeSettings{
+	receive, stop, bind, _ := eo.exchange.ReceiveMultiple(ExchangeSettings{
 		Name:         eo.exchangeName,
 		ExchangeType: ExchangeTypeHeaders,
 		Durable:      true,
@@ -261,6 +259,15 @@ func (eo *eventObserver) Subscribe(ids []int64, handler func(*Event)) Unsubscrib
 		Prefetch:   eo.prefetchCount,
 		BindArgs:   bindHeaders,
 	})
+
+	// Bind for every ID we need to listen for
+	for _, id := range ids {
+		headers := map[string]interface{}{
+			"x-match":      "any",
+			eo.defaultPath: id,
+		}
+		bind("", headers)
+	}
 
 	go func() {
 		_ = receive(func(ctx context.Context, data []byte, headers map[string]interface{}) error {
@@ -316,18 +323,15 @@ func (eo *multiEventObserver) Subscribe(
 		"x-match": "any",
 	}
 
+	// if no IDs are specified for a path, listen for all events on that path
 	for path, ids := range paths {
 		if len(ids) == 0 {
-			bindHeaders[path] = true
-			continue
-		}
-		for _, id := range ids {
-			bindHeaders[fmt.Sprintf("%s.%d", path, id)] = true
+			bindHeaders[fmt.Sprintf("%s-%s", EventPathHeaderKey, path)] = true
 		}
 	}
 
 	// How do we deal with the error :(
-	receive, stop, err := eo.exchange.Receive(ExchangeSettings{
+	receive, stop, bind, err := eo.exchange.ReceiveMultiple(ExchangeSettings{
 		Name:         eo.exchangeName,
 		ExchangeType: ExchangeTypeHeaders,
 		Durable:      true,
@@ -343,6 +347,20 @@ func (eo *multiEventObserver) Subscribe(
 		Prefetch:   eo.prefetchCount,
 		BindArgs:   bindHeaders,
 	})
+
+	for path, ids := range paths {
+		if len(ids) == 0 {
+			continue
+		}
+		// Bind for every id we want to listen for on path.
+		for _, id := range ids {
+			headers := map[string]interface{}{
+				"x-match": "any",
+				path:      id,
+			}
+			bind("", headers)
+		}
+	}
 
 	if err != nil {
 		return stop, err
