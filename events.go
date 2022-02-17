@@ -45,6 +45,10 @@ type EventConsumer interface {
 	SubscribeUnfiltered(handler func(*Event)) Unsubscribe
 }
 
+type MultiEventConsumer interface {
+	Subscribe(paths map[string][]int64, handler func(*Event)) Unsubscribe
+}
+
 type TargetedEventConsumer func(handler func(*Event)) (func(), error)
 
 type RabbitEventHandler interface {
@@ -150,7 +154,21 @@ func (rem *ImplRabbitEventHandler) EmitMultiple() MultiEventEmitter {
 func (rem *ImplRabbitEventHandler) Consume(path string, typer ...func() interface{}) (EventConsumer, error) {
 
 	eo := &eventObserver{
-		path:          path,
+		defaultPath:   path,
+		exchangeName:  rem.exchangeName,
+		prefetchCount: rem.prefetchCount,
+		exchange:      rem.rabbitEx,
+	}
+	for _, tr := range typer {
+		eo.typer = tr
+	}
+
+	return eo, nil
+}
+
+func (rem *ImplRabbitEventHandler) ConsumeMultiple(typer ...func() interface{}) (MultiEventConsumer, error) {
+
+	eo := &multiEventObserver{
 		exchangeName:  rem.exchangeName,
 		prefetchCount: rem.prefetchCount,
 		exchange:      rem.rabbitEx,
@@ -181,7 +199,7 @@ func Emit(ctx context.Context, rabbitIni *RabbitIni, path string, action ActionT
 
 type eventObserver struct {
 	typer         func() interface{}
-	path          string
+	defaultPath   string
 	exchangeName  string
 	prefetchCount int
 	exchange      RabbitExchange
@@ -221,11 +239,11 @@ func (eo *eventObserver) Subscribe(ids []int64, handler func(*Event)) Unsubscrib
 	}
 
 	for _, id := range ids {
-		bindHeaders[fmt.Sprintf("%s.%d", eo.path, id)] = true
+		bindHeaders[fmt.Sprintf("%s.%d", eo.defaultPath, id)] = true
 	}
 
 	if len(ids) == 0 {
-		bindHeaders[EventPathHeaderKey] = eo.path
+		bindHeaders[EventPathHeaderKey] = eo.defaultPath
 	}
 
 	// How do we deal with the error :(
@@ -252,9 +270,86 @@ func (eo *eventObserver) Subscribe(ids []int64, handler func(*Event)) Unsubscrib
 		})
 	}()
 	return stop
-
 }
 
 func (eo *eventObserver) SubscribeUnfiltered(handler func(*Event)) Unsubscribe {
 	return eo.Subscribe(nil, handler)
+}
+
+type multiEventObserver struct {
+	typer         func() interface{}
+	exchangeName  string
+	prefetchCount int
+	exchange      RabbitExchange
+}
+
+func (eo *multiEventObserver) Change(ctx context.Context, data []byte, headers map[string]interface{}, handler func(*Event)) error {
+	if ctx == nil {
+		return ErrNilContext
+	}
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+
+	if data == nil {
+		return nil
+	}
+
+	e := &Event{}
+
+	if eo.typer != nil {
+		e.State = eo.typer()
+	}
+
+	err := json.Unmarshal(data, e)
+	if err != nil {
+		return err
+	}
+	handler(e)
+
+	return nil
+}
+
+func (eo *multiEventObserver) Subscribe(
+	paths map[string][]int64,
+	handler func(*Event),
+) Unsubscribe {
+	bindHeaders := map[string]interface{}{
+		"x-match": "any",
+	}
+
+	for path, ids := range paths {
+		if len(ids) == 0 {
+			bindHeaders[path] = true
+			continue
+		}
+		for _, id := range ids {
+			bindHeaders[fmt.Sprintf("%s.%d", path, id)] = true
+		}
+	}
+
+	// How do we deal with the error :(
+	receive, stop, _ := eo.exchange.Receive(ExchangeSettings{
+		Name:         eo.exchangeName,
+		ExchangeType: ExchangeTypeHeaders,
+		Durable:      true,
+		AutoDelete:   false,
+		Exclusive:    false,
+		NoWait:       false,
+		Args:         nil,
+	}, QueueSettings{
+		Name:       "",
+		RoutingKey: "",
+		AutoDelete: true,
+		Exclusive:  true,
+		Prefetch:   eo.prefetchCount,
+		BindArgs:   bindHeaders,
+	})
+
+	go func() {
+		_ = receive(func(ctx context.Context, data []byte, headers map[string]interface{}) error {
+			return eo.Change(ctx, data, headers, handler)
+		})
+	}()
+	return stop
 }
