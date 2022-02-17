@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"runtime"
-	"strconv"
 )
 
 type ActionType string
@@ -73,109 +72,78 @@ func NewRabbitEventHandler(rabbitEx RabbitExchange, exchangeName string, prefetc
 	}
 }
 
+func (rem *ImplRabbitEventHandler) sendEvent(
+	messageSender MessageHandleFunc,
+	ctx context.Context,
+	action ActionType,
+	context map[string][]string,
+	old, state interface{},
+	paths map[string]int64,
+) error {
+	messageHeaders := map[string]interface{}{
+		EventActionHeaderKey: action,
+	}
+	lastPath := ""
+	lastID := int64(0)
+	for k, v := range paths {
+		messageHeaders[k] = true
+		messageHeaders[fmt.Sprintf("%s.%d", k, v)] = true
+		lastPath = k
+		lastID = v
+	}
+	if ctx == nil {
+		return ErrNilContext
+	}
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	event := Event{
+		Action: action,
+		Source: EventSource{
+			Context: context,
+		},
+		ID:    lastID,
+		Path:  lastPath,
+		Old:   old,
+		State: state,
+	}
+
+	callers := make([]uintptr, 30)
+	numCallers := runtime.Callers(2, callers)
+	if numCallers > 1 {
+		frames := runtime.CallersFrames(callers)
+		first, _ := frames.Next()
+		event.Source.Originator += first.File + ":" + fmt.Sprint(first.Line) + " " + first.Function + "\n"
+	}
+
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+
+	data, err := json.Marshal(event)
+
+	if err != nil {
+		return err
+	}
+
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+
+	return messageSender(ctx, data, messageHeaders)
+}
+
 func (rem *ImplRabbitEventHandler) Emit(path string) EventEmitter {
 	messageSender := rem.rabbitEx.SendTo(rem.exchangeName, ExchangeTypeHeaders, true, false, "")
 	return func(ctx context.Context, action ActionType, context map[string][]string, id int64, old, state interface{}) error {
-		strID := strconv.FormatInt(id, 10)
-		messageHeaders := map[string]interface{}{
-			fmt.Sprintf("%s.%s", path, strID): true,
-			path:                              true,
-			EventIDHeaderKey:                  strID,
-			EventPathHeaderKey:                path,
-			EventActionHeaderKey:              action,
-		}
-		if ctx == nil {
-			return ErrNilContext
-		}
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-
-		event := Event{
-			Path:   path,
-			Action: action,
-			ID:     id,
-			Source: EventSource{
-				Context: context,
-			},
-			Old:   old,
-			State: state,
-		}
-
-		callers := make([]uintptr, 30)
-		numCallers := runtime.Callers(2, callers)
-		if numCallers > 1 {
-			frames := runtime.CallersFrames(callers)
-			first, _ := frames.Next()
-			event.Source.Originator += first.File + ":" + fmt.Sprint(first.Line) + " " + first.Function + "\n"
-		}
-
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-
-		data, err := json.Marshal(event)
-
-		if err != nil {
-			return err
-		}
-
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-
-		return messageSender(ctx, data, messageHeaders)
+		return rem.sendEvent(messageSender, ctx, action, context, old, state, map[string]int64{path: id})
 	}
 }
 
 func (rem *ImplRabbitEventHandler) EmitMultiple() MultiEventEmitter {
 	messageSender := rem.rabbitEx.SendTo(rem.exchangeName, ExchangeTypeHeaders, true, false, "")
 	return func(ctx context.Context, action ActionType, context map[string][]string, old, state interface{}, paths map[string]int64) error {
-		messageHeaders := map[string]interface{}{
-			EventActionHeaderKey: action,
-		}
-		for k, v := range paths {
-			messageHeaders[k] = true
-			messageHeaders[fmt.Sprintf("%s.%d", k, v)] = true
-		}
-		if ctx == nil {
-			return ErrNilContext
-		}
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-		event := Event{
-			Action: action,
-			Source: EventSource{
-				Context: context,
-			},
-			Old:   old,
-			State: state,
-		}
-
-		callers := make([]uintptr, 30)
-		numCallers := runtime.Callers(2, callers)
-		if numCallers > 1 {
-			frames := runtime.CallersFrames(callers)
-			first, _ := frames.Next()
-			event.Source.Originator += first.File + ":" + fmt.Sprint(first.Line) + " " + first.Function + "\n"
-		}
-
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-
-		data, err := json.Marshal(event)
-
-		if err != nil {
-			return err
-		}
-
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-
-		return messageSender(ctx, data, messageHeaders)
+		return rem.sendEvent(messageSender, ctx, action, context, old, state, paths)
 	}
 }
 
