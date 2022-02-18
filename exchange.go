@@ -198,7 +198,7 @@ func (re *RabbitExchangeImpl) SendTo(name, exchangeType string, durable, autoDel
 			}
 			err = ch.Publish(
 				name,  // exchange
-				"",    // routing key
+				key,   // routing key
 				false, // mandatory
 				false, // immediate
 				amqp.Publishing{

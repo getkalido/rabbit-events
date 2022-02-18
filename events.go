@@ -14,9 +14,8 @@ const (
 	Update               ActionType = "update"
 	Delete               ActionType = "delete"
 	EventPathHeaderKey              = "path"
-	EventIDHeaderKey                = "id"
 	EventActionHeaderKey            = "action"
-	HeaderExchangeSuffix            = "-headers"
+	HeaderExchangeSuffix            = "headers"
 )
 
 type Event struct {
@@ -51,14 +50,15 @@ type TargetedEventConsumer func(handler func(*Event)) (func(), error)
 
 type RabbitEventHandler interface {
 	Emit(path string) EventEmitter
-	EmitMultiple() MultiEventEmitter
+	EmitMultiple(paths []string) MultiEventEmitter
 	Consume(path string, typer ...func() interface{}) (EventConsumer, error)
 }
 
 type ImplRabbitEventHandler struct {
-	rabbitEx      RabbitExchange
-	exchangeName  string
-	prefetchCount int
+	rabbitEx          RabbitExchange
+	exchangeName      string
+	topicExchangeName string
+	prefetchCount     int
 }
 
 const rabbitPrefetchForSingleQueue = 100
@@ -68,9 +68,10 @@ func NewRabbitEventHandler(rabbitEx RabbitExchange, exchangeName string, prefetc
 		prefetchCount = rabbitPrefetchForSingleQueue + runtime.NumCPU()*2
 	}
 	return &ImplRabbitEventHandler{
-		rabbitEx:      rabbitEx,
-		exchangeName:  exchangeName,
-		prefetchCount: prefetchCount,
+		rabbitEx:          rabbitEx,
+		topicExchangeName: exchangeName,
+		exchangeName:      fmt.Sprintf("%s-%s", exchangeName, HeaderExchangeSuffix),
+		prefetchCount:     prefetchCount,
 	}
 }
 
@@ -139,15 +140,39 @@ func (rem *ImplRabbitEventHandler) sendEvent(
 
 func (rem *ImplRabbitEventHandler) Emit(path string) EventEmitter {
 	messageSender := rem.rabbitEx.SendTo(rem.exchangeName, ExchangeTypeHeaders, true, false, "")
+	topicMessageSender := rem.rabbitEx.SendTo(rem.topicExchangeName, ExchangeTypeTopic, true, false, path)
 	return func(ctx context.Context, action ActionType, context map[string][]string, id int64, old, state interface{}) error {
-		return rem.sendEvent(messageSender, ctx, action, context, old, state, map[string]int64{path: id})
+		err := rem.sendEvent(messageSender, ctx, action, context, old, state, map[string]int64{path: id})
+		if err != nil {
+			return err
+		}
+		return rem.sendEvent(topicMessageSender, ctx, action, context, old, state, map[string]int64{path: id})
 	}
 }
 
-func (rem *ImplRabbitEventHandler) EmitMultiple() MultiEventEmitter {
+func (rem *ImplRabbitEventHandler) EmitMultiple(paths []string) MultiEventEmitter {
 	messageSender := rem.rabbitEx.SendTo(rem.exchangeName, ExchangeTypeHeaders, true, false, "")
+	topicMessageSenders := make(map[string]MessageHandleFunc)
+	for _, path := range paths {
+		topicMessageSenders[path] = rem.rabbitEx.SendTo(
+			rem.topicExchangeName, ExchangeTypeTopic, true, false, path)
+	}
 	return func(ctx context.Context, action ActionType, context map[string][]string, old, state interface{}, paths map[string]int64) error {
-		return rem.sendEvent(messageSender, ctx, action, context, old, state, paths)
+		err := rem.sendEvent(messageSender, ctx, action, context, old, state, paths)
+		if err != nil {
+			return err
+		}
+		for path, id := range paths {
+			sender, ok := topicMessageSenders[path]
+			if !ok {
+				continue
+			}
+			err = rem.sendEvent(sender, ctx, action, context, old, state, map[string]int64{path: id})
+			if err != nil {
+				return err
+			}
+		}
+		return nil
 	}
 }
 
