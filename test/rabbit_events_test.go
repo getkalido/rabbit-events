@@ -35,7 +35,7 @@ var _ = Describe("RabbitEvents", func() {
 		It("Should send messages after quiescence", func() {
 			messagesSent := make([]string, 0)
 			var l sync.Mutex
-			mockSender := func(ctx context.Context, m []string, x string, ri RabbitConfig) {
+			mockSender := func(ctx context.Context, m []string, x string, ri RabbitConfig, _ map[string]interface{}) {
 				l.Lock()
 				defer l.Unlock()
 				messagesSent = append(messagesSent, m...)
@@ -57,7 +57,7 @@ var _ = Describe("RabbitEvents", func() {
 			callCount := 0
 			var l sync.Mutex
 
-			mockSender := func(ctx context.Context, m []string, x string, ri RabbitConfig) {
+			mockSender := func(ctx context.Context, m []string, x string, ri RabbitConfig, _ map[string]interface{}) {
 				l.Lock()
 				defer l.Unlock()
 				callCount++
@@ -86,7 +86,7 @@ var _ = Describe("RabbitEvents", func() {
 			messagesSent := make([]string, 0)
 			var l sync.Mutex
 
-			mockSender := func(ctx context.Context, m []string, x string, ri RabbitConfig) {
+			mockSender := func(ctx context.Context, m []string, x string, ri RabbitConfig, _ map[string]interface{}) {
 				l.Lock()
 				defer l.Unlock()
 				messagesSent = append(messagesSent, m...)
@@ -184,7 +184,7 @@ var _ = Describe("RabbitEvents", func() {
 			replies := make(chan struct{})
 			doOnce := make(chan struct{}, 1)
 			go func() {
-				handler(func(ctx context.Context, message []byte) (err error) {
+				handler(func(ctx context.Context, message []byte, _ map[string]interface{}) (err error) {
 					replies <- struct{}{}
 					doOnce <- struct{}{}
 					return NewEventProcessingError(errors.New("Whaaaaaa"))
@@ -192,7 +192,7 @@ var _ = Describe("RabbitEvents", func() {
 			}()
 
 			sendFn := exchange.SendTo("test-exchange", ExchangeTypeTopic, false, true, "test.queue")
-			sendFn(context.Background(), []byte{})
+			sendFn(context.Background(), []byte{}, map[string]interface{}{})
 			noReplies := 0
 			timer := time.NewTimer(13 * time.Second)
 		recvLoop:
@@ -233,7 +233,7 @@ var _ = Describe("RabbitEvents", func() {
 			replies := make(chan struct{})
 			doOnce := make(chan struct{}, 1)
 			go func() {
-				handler(func(ctx context.Context, message []byte) (err error) {
+				handler(func(ctx context.Context, message []byte, _ map[string]interface{}) (err error) {
 					replies <- struct{}{}
 					doOnce <- struct{}{}
 					return NewTestError(errors.New("This should result in a requeueing as well"))
@@ -241,7 +241,7 @@ var _ = Describe("RabbitEvents", func() {
 			}()
 
 			sendFn := exchange.SendTo("test-exchange", ExchangeTypeTopic, false, true, "test.queue")
-			sendFn(context.Background(), []byte{})
+			sendFn(context.Background(), []byte{}, map[string]interface{}{})
 			noReplies := 0
 			timer := time.NewTimer(13 * time.Second)
 		recvLoop:
@@ -280,14 +280,14 @@ var _ = Describe("RabbitEvents", func() {
 			defer closeHandler()
 			replies := make(chan struct{})
 			go func() {
-				handler(func(ctx context.Context, message []byte) (err error) {
+				handler(func(ctx context.Context, message []byte, _ map[string]interface{}) (err error) {
 					replies <- struct{}{}
 					return errors.New("Whaaaa!")
 				})
 			}()
 
 			sendFn := exchange.SendTo("test-exchange", ExchangeTypeTopic, false, true, "test.queue")
-			sendFn(context.Background(), []byte{})
+			sendFn(context.Background(), []byte{}, map[string]interface{}{})
 			noReplies := 0
 			timer := time.NewTimer(13 * time.Second)
 		recvLoop:

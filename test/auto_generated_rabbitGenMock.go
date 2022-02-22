@@ -5,36 +5,37 @@
 package test
 
 import (
-	rabbitevents "github.com/getkalido/rabbit-events"
-	gomock "github.com/golang/mock/gomock"
 	reflect "reflect"
 	time "time"
+
+	rabbitevents "github.com/getkalido/rabbit-events"
+	gomock "github.com/golang/mock/gomock"
 )
 
-// MockRabbitEventHandler is a mock of RabbitEventHandler interface
+// MockRabbitEventHandler is a mock of RabbitEventHandler interface.
 type MockRabbitEventHandler struct {
 	ctrl     *gomock.Controller
 	recorder *MockRabbitEventHandlerMockRecorder
 }
 
-// MockRabbitEventHandlerMockRecorder is the mock recorder for MockRabbitEventHandler
+// MockRabbitEventHandlerMockRecorder is the mock recorder for MockRabbitEventHandler.
 type MockRabbitEventHandlerMockRecorder struct {
 	mock *MockRabbitEventHandler
 }
 
-// NewMockRabbitEventHandler creates a new mock instance
+// NewMockRabbitEventHandler creates a new mock instance.
 func NewMockRabbitEventHandler(ctrl *gomock.Controller) *MockRabbitEventHandler {
 	mock := &MockRabbitEventHandler{ctrl: ctrl}
 	mock.recorder = &MockRabbitEventHandlerMockRecorder{mock}
 	return mock
 }
 
-// EXPECT returns an object that allows the caller to indicate expected use
+// EXPECT returns an object that allows the caller to indicate expected use.
 func (m *MockRabbitEventHandler) EXPECT() *MockRabbitEventHandlerMockRecorder {
 	return m.recorder
 }
 
-// Consume mocks base method
+// Consume mocks base method.
 func (m *MockRabbitEventHandler) Consume(arg0 string, arg1 ...func() interface{}) (rabbitevents.EventConsumer, error) {
 	m.ctrl.T.Helper()
 	varargs := []interface{}{arg0}
@@ -47,14 +48,14 @@ func (m *MockRabbitEventHandler) Consume(arg0 string, arg1 ...func() interface{}
 	return ret0, ret1
 }
 
-// Consume indicates an expected call of Consume
+// Consume indicates an expected call of Consume.
 func (mr *MockRabbitEventHandlerMockRecorder) Consume(arg0 interface{}, arg1 ...interface{}) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	varargs := append([]interface{}{arg0}, arg1...)
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Consume", reflect.TypeOf((*MockRabbitEventHandler)(nil).Consume), varargs...)
 }
 
-// Emit mocks base method
+// Emit mocks base method.
 func (m *MockRabbitEventHandler) Emit(arg0 string) rabbitevents.EventEmitter {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "Emit", arg0)
@@ -62,36 +63,50 @@ func (m *MockRabbitEventHandler) Emit(arg0 string) rabbitevents.EventEmitter {
 	return ret0
 }
 
-// Emit indicates an expected call of Emit
+// Emit indicates an expected call of Emit.
 func (mr *MockRabbitEventHandlerMockRecorder) Emit(arg0 interface{}) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Emit", reflect.TypeOf((*MockRabbitEventHandler)(nil).Emit), arg0)
 }
 
-// MockEventConsumer is a mock of EventConsumer interface
+// EmitMultiple mocks base method.
+func (m *MockRabbitEventHandler) EmitMultiple(arg0 []string) rabbitevents.MultiEventEmitter {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "EmitMultiple", arg0)
+	ret0, _ := ret[0].(rabbitevents.MultiEventEmitter)
+	return ret0
+}
+
+// EmitMultiple indicates an expected call of EmitMultiple.
+func (mr *MockRabbitEventHandlerMockRecorder) EmitMultiple(arg0 interface{}) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "EmitMultiple", reflect.TypeOf((*MockRabbitEventHandler)(nil).EmitMultiple), arg0)
+}
+
+// MockEventConsumer is a mock of EventConsumer interface.
 type MockEventConsumer struct {
 	ctrl     *gomock.Controller
 	recorder *MockEventConsumerMockRecorder
 }
 
-// MockEventConsumerMockRecorder is the mock recorder for MockEventConsumer
+// MockEventConsumerMockRecorder is the mock recorder for MockEventConsumer.
 type MockEventConsumerMockRecorder struct {
 	mock *MockEventConsumer
 }
 
-// NewMockEventConsumer creates a new mock instance
+// NewMockEventConsumer creates a new mock instance.
 func NewMockEventConsumer(ctrl *gomock.Controller) *MockEventConsumer {
 	mock := &MockEventConsumer{ctrl: ctrl}
 	mock.recorder = &MockEventConsumerMockRecorder{mock}
 	return mock
 }
 
-// EXPECT returns an object that allows the caller to indicate expected use
+// EXPECT returns an object that allows the caller to indicate expected use.
 func (m *MockEventConsumer) EXPECT() *MockEventConsumerMockRecorder {
 	return m.recorder
 }
 
-// Subscribe mocks base method
+// Subscribe mocks base method.
 func (m *MockEventConsumer) Subscribe(arg0 []int64, arg1 func(*rabbitevents.Event)) rabbitevents.Unsubscribe {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "Subscribe", arg0, arg1)
@@ -99,13 +114,13 @@ func (m *MockEventConsumer) Subscribe(arg0 []int64, arg1 func(*rabbitevents.Even
 	return ret0
 }
 
-// Subscribe indicates an expected call of Subscribe
+// Subscribe indicates an expected call of Subscribe.
 func (mr *MockEventConsumerMockRecorder) Subscribe(arg0, arg1 interface{}) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Subscribe", reflect.TypeOf((*MockEventConsumer)(nil).Subscribe), arg0, arg1)
 }
 
-// SubscribeUnfiltered mocks base method
+// SubscribeUnfiltered mocks base method.
 func (m *MockEventConsumer) SubscribeUnfiltered(arg0 func(*rabbitevents.Event)) rabbitevents.Unsubscribe {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "SubscribeUnfiltered", arg0)
@@ -113,36 +128,36 @@ func (m *MockEventConsumer) SubscribeUnfiltered(arg0 func(*rabbitevents.Event)) 
 	return ret0
 }
 
-// SubscribeUnfiltered indicates an expected call of SubscribeUnfiltered
+// SubscribeUnfiltered indicates an expected call of SubscribeUnfiltered.
 func (mr *MockEventConsumerMockRecorder) SubscribeUnfiltered(arg0 interface{}) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SubscribeUnfiltered", reflect.TypeOf((*MockEventConsumer)(nil).SubscribeUnfiltered), arg0)
 }
 
-// MockRabbitExchange is a mock of RabbitExchange interface
+// MockRabbitExchange is a mock of RabbitExchange interface.
 type MockRabbitExchange struct {
 	ctrl     *gomock.Controller
 	recorder *MockRabbitExchangeMockRecorder
 }
 
-// MockRabbitExchangeMockRecorder is the mock recorder for MockRabbitExchange
+// MockRabbitExchangeMockRecorder is the mock recorder for MockRabbitExchange.
 type MockRabbitExchangeMockRecorder struct {
 	mock *MockRabbitExchange
 }
 
-// NewMockRabbitExchange creates a new mock instance
+// NewMockRabbitExchange creates a new mock instance.
 func NewMockRabbitExchange(ctrl *gomock.Controller) *MockRabbitExchange {
 	mock := &MockRabbitExchange{ctrl: ctrl}
 	mock.recorder = &MockRabbitExchangeMockRecorder{mock}
 	return mock
 }
 
-// EXPECT returns an object that allows the caller to indicate expected use
+// EXPECT returns an object that allows the caller to indicate expected use.
 func (m *MockRabbitExchange) EXPECT() *MockRabbitExchangeMockRecorder {
 	return m.recorder
 }
 
-// Close mocks base method
+// Close mocks base method.
 func (m *MockRabbitExchange) Close() error {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "Close")
@@ -150,13 +165,13 @@ func (m *MockRabbitExchange) Close() error {
 	return ret0
 }
 
-// Close indicates an expected call of Close
+// Close indicates an expected call of Close.
 func (mr *MockRabbitExchangeMockRecorder) Close() *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Close", reflect.TypeOf((*MockRabbitExchange)(nil).Close))
 }
 
-// Receive mocks base method
+// Receive mocks base method.
 func (m *MockRabbitExchange) Receive(arg0 rabbitevents.ExchangeSettings, arg1 rabbitevents.QueueSettings) (func(rabbitevents.MessageHandleFunc) error, func(), error) {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "Receive", arg0, arg1)
@@ -166,13 +181,13 @@ func (m *MockRabbitExchange) Receive(arg0 rabbitevents.ExchangeSettings, arg1 ra
 	return ret0, ret1, ret2
 }
 
-// Receive indicates an expected call of Receive
+// Receive indicates an expected call of Receive.
 func (mr *MockRabbitExchangeMockRecorder) Receive(arg0, arg1 interface{}) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Receive", reflect.TypeOf((*MockRabbitExchange)(nil).Receive), arg0, arg1)
 }
 
-// ReceiveFrom mocks base method
+// ReceiveFrom mocks base method.
 func (m *MockRabbitExchange) ReceiveFrom(arg0, arg1 string, arg2, arg3 bool, arg4, arg5 string) (func(rabbitevents.MessageHandleFunc) error, func(), error) {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "ReceiveFrom", arg0, arg1, arg2, arg3, arg4, arg5)
@@ -182,13 +197,30 @@ func (m *MockRabbitExchange) ReceiveFrom(arg0, arg1 string, arg2, arg3 bool, arg
 	return ret0, ret1, ret2
 }
 
-// ReceiveFrom indicates an expected call of ReceiveFrom
+// ReceiveFrom indicates an expected call of ReceiveFrom.
 func (mr *MockRabbitExchangeMockRecorder) ReceiveFrom(arg0, arg1, arg2, arg3, arg4, arg5 interface{}) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ReceiveFrom", reflect.TypeOf((*MockRabbitExchange)(nil).ReceiveFrom), arg0, arg1, arg2, arg3, arg4, arg5)
 }
 
-// SendTo mocks base method
+// ReceiveMultiple mocks base method.
+func (m *MockRabbitExchange) ReceiveMultiple(arg0 rabbitevents.ExchangeSettings, arg1 rabbitevents.QueueSettings) (func(rabbitevents.MessageHandleFunc) error, func(), func(string, map[string]interface{}), error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "ReceiveMultiple", arg0, arg1)
+	ret0, _ := ret[0].(func(rabbitevents.MessageHandleFunc) error)
+	ret1, _ := ret[1].(func())
+	ret2, _ := ret[2].(func(string, map[string]interface{}))
+	ret3, _ := ret[3].(error)
+	return ret0, ret1, ret2, ret3
+}
+
+// ReceiveMultiple indicates an expected call of ReceiveMultiple.
+func (mr *MockRabbitExchangeMockRecorder) ReceiveMultiple(arg0, arg1 interface{}) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ReceiveMultiple", reflect.TypeOf((*MockRabbitExchange)(nil).ReceiveMultiple), arg0, arg1)
+}
+
+// SendTo mocks base method.
 func (m *MockRabbitExchange) SendTo(arg0, arg1 string, arg2, arg3 bool, arg4 string) rabbitevents.MessageHandleFunc {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "SendTo", arg0, arg1, arg2, arg3, arg4)
@@ -196,36 +228,36 @@ func (m *MockRabbitExchange) SendTo(arg0, arg1 string, arg2, arg3 bool, arg4 str
 	return ret0
 }
 
-// SendTo indicates an expected call of SendTo
+// SendTo indicates an expected call of SendTo.
 func (mr *MockRabbitExchangeMockRecorder) SendTo(arg0, arg1, arg2, arg3, arg4 interface{}) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SendTo", reflect.TypeOf((*MockRabbitExchange)(nil).SendTo), arg0, arg1, arg2, arg3, arg4)
 }
 
-// MockRabbitConfig is a mock of RabbitConfig interface
+// MockRabbitConfig is a mock of RabbitConfig interface.
 type MockRabbitConfig struct {
 	ctrl     *gomock.Controller
 	recorder *MockRabbitConfigMockRecorder
 }
 
-// MockRabbitConfigMockRecorder is the mock recorder for MockRabbitConfig
+// MockRabbitConfigMockRecorder is the mock recorder for MockRabbitConfig.
 type MockRabbitConfigMockRecorder struct {
 	mock *MockRabbitConfig
 }
 
-// NewMockRabbitConfig creates a new mock instance
+// NewMockRabbitConfig creates a new mock instance.
 func NewMockRabbitConfig(ctrl *gomock.Controller) *MockRabbitConfig {
 	mock := &MockRabbitConfig{ctrl: ctrl}
 	mock.recorder = &MockRabbitConfigMockRecorder{mock}
 	return mock
 }
 
-// EXPECT returns an object that allows the caller to indicate expected use
+// EXPECT returns an object that allows the caller to indicate expected use.
 func (m *MockRabbitConfig) EXPECT() *MockRabbitConfigMockRecorder {
 	return m.recorder
 }
 
-// GetConnectTimeout mocks base method
+// GetConnectTimeout mocks base method.
 func (m *MockRabbitConfig) GetConnectTimeout() time.Duration {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "GetConnectTimeout")
@@ -233,13 +265,13 @@ func (m *MockRabbitConfig) GetConnectTimeout() time.Duration {
 	return ret0
 }
 
-// GetConnectTimeout indicates an expected call of GetConnectTimeout
+// GetConnectTimeout indicates an expected call of GetConnectTimeout.
 func (mr *MockRabbitConfigMockRecorder) GetConnectTimeout() *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetConnectTimeout", reflect.TypeOf((*MockRabbitConfig)(nil).GetConnectTimeout))
 }
 
-// GetHost mocks base method
+// GetHost mocks base method.
 func (m *MockRabbitConfig) GetHost() string {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "GetHost")
@@ -247,13 +279,13 @@ func (m *MockRabbitConfig) GetHost() string {
 	return ret0
 }
 
-// GetHost indicates an expected call of GetHost
+// GetHost indicates an expected call of GetHost.
 func (mr *MockRabbitConfigMockRecorder) GetHost() *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetHost", reflect.TypeOf((*MockRabbitConfig)(nil).GetHost))
 }
 
-// GetPassword mocks base method
+// GetPassword mocks base method.
 func (m *MockRabbitConfig) GetPassword() string {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "GetPassword")
@@ -261,13 +293,13 @@ func (m *MockRabbitConfig) GetPassword() string {
 	return ret0
 }
 
-// GetPassword indicates an expected call of GetPassword
+// GetPassword indicates an expected call of GetPassword.
 func (mr *MockRabbitConfigMockRecorder) GetPassword() *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetPassword", reflect.TypeOf((*MockRabbitConfig)(nil).GetPassword))
 }
 
-// GetUserName mocks base method
+// GetUserName mocks base method.
 func (m *MockRabbitConfig) GetUserName() string {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "GetUserName")
@@ -275,7 +307,7 @@ func (m *MockRabbitConfig) GetUserName() string {
 	return ret0
 }
 
-// GetUserName indicates an expected call of GetUserName
+// GetUserName indicates an expected call of GetUserName.
 func (mr *MockRabbitConfigMockRecorder) GetUserName() *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetUserName", reflect.TypeOf((*MockRabbitConfig)(nil).GetUserName))
