@@ -236,7 +236,7 @@ func (re *RabbitExchangeImpl) ReceiveFrom(name, exchangeType string, durable, au
 		Name:       clientName,
 		RoutingKey: key,
 		AutoDelete: true,
-		Exclusive:  true,
+		Exclusive:  false,
 	})
 }
 

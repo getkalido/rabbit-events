@@ -146,10 +146,11 @@ var _ = Describe("RabbitEvents", func() {
 			ctrl := gomock.NewController(GinkgoT())
 			defer ctrl.Finish()
 			exchange := NewMockRabbitExchange(ctrl)
-			exchangeRunner := func(ctx context.Context, data []byte) error {
+			exchangeRunner := func(ctx context.Context, data []byte, _ map[string]interface{}) error {
 				Expect(ctx.Err()).To(BeNil())
 				return nil
 			}
+			exchange.EXPECT().SendTo("test-exchange-headers", ExchangeTypeHeaders, true, false, "").Return(exchangeRunner)
 			exchange.EXPECT().SendTo("test-exchange", ExchangeTypeTopic, true, false, "test").Return(exchangeRunner)
 			eventHandler := NewRabbitEventHandler(exchange, "test-exchange", 0)
 			emitter := eventHandler.Emit("test")
@@ -165,9 +166,9 @@ var _ = Describe("RabbitEvents", func() {
 			ctrl := gomock.NewController(GinkgoT())
 			defer ctrl.Finish()
 			mockConfig := NewMockRabbitConfig(ctrl)
-			mockConfig.EXPECT().GetHost().Return("localhost:5672")
-			mockConfig.EXPECT().GetUserName().Return("guest")
-			mockConfig.EXPECT().GetPassword().Return("guest")
+			mockConfig.EXPECT().GetHost().Return("localhost:5672").Times(2)
+			mockConfig.EXPECT().GetUserName().Return("guest").Times(2)
+			mockConfig.EXPECT().GetPassword().Return("guest").Times(2)
 			mockConfig.EXPECT().GetConnectTimeout().Return(time.Second * 5).AnyTimes()
 			exchange := NewRabbitExchange(mockConfig)
 
@@ -214,9 +215,9 @@ var _ = Describe("RabbitEvents", func() {
 			ctrl := gomock.NewController(GinkgoT())
 			defer ctrl.Finish()
 			mockConfig := NewMockRabbitConfig(ctrl)
-			mockConfig.EXPECT().GetHost().Return("localhost:5672")
-			mockConfig.EXPECT().GetUserName().Return("guest")
-			mockConfig.EXPECT().GetPassword().Return("guest")
+			mockConfig.EXPECT().GetHost().Return("localhost:5672").Times(2)
+			mockConfig.EXPECT().GetUserName().Return("guest").Times(2)
+			mockConfig.EXPECT().GetPassword().Return("guest").Times(2)
 			mockConfig.EXPECT().GetConnectTimeout().Return(time.Second * 5).AnyTimes()
 			exchange := NewRabbitExchange(mockConfig)
 
@@ -262,9 +263,9 @@ var _ = Describe("RabbitEvents", func() {
 			ctrl := gomock.NewController(GinkgoT())
 			defer ctrl.Finish()
 			mockConfig := NewMockRabbitConfig(ctrl)
-			mockConfig.EXPECT().GetHost().Return("localhost:5672")
-			mockConfig.EXPECT().GetUserName().Return("guest")
-			mockConfig.EXPECT().GetPassword().Return("guest")
+			mockConfig.EXPECT().GetHost().Return("localhost:5672").Times(2)
+			mockConfig.EXPECT().GetUserName().Return("guest").Times(2)
+			mockConfig.EXPECT().GetPassword().Return("guest").Times(2)
 			mockConfig.EXPECT().GetConnectTimeout().Return(time.Second * 5).AnyTimes()
 			exchange := NewRabbitExchange(mockConfig)
 

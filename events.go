@@ -280,7 +280,7 @@ func (eo *eventObserver) Subscribe(ids []int64, handler func(*Event)) Unsubscrib
 		Name:       "",
 		RoutingKey: "",
 		AutoDelete: true,
-		Exclusive:  true,
+		Exclusive:  false,
 		Prefetch:   eo.prefetchCount,
 		BindArgs:   bindHeaders,
 	})
