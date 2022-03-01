@@ -374,6 +374,10 @@ func (re *RabbitExchangeImpl) Receive(exchange ExchangeSettings, queue QueueSett
 						time.Sleep(time.Second)
 					}
 				}
+				// If `msgs` is still empty, we need to retry, so we loop
+				if msgs == nil {
+					continue
+				}
 
 				select {
 				case m, ok := <-msgs:
