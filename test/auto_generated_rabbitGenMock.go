@@ -204,14 +204,15 @@ func (mr *MockRabbitExchangeMockRecorder) ReceiveFrom(arg0, arg1, arg2, arg3, ar
 }
 
 // ReceiveMultiple mocks base method.
-func (m *MockRabbitExchange) ReceiveMultiple(arg0 rabbitevents.ExchangeSettings, arg1 rabbitevents.QueueSettings) (func(rabbitevents.MessageHandleFunc) error, func(), func(string, map[string]interface{}), error) {
+func (m *MockRabbitExchange) ReceiveMultiple(arg0 rabbitevents.ExchangeSettings, arg1 rabbitevents.QueueSettings) (func(rabbitevents.MessageHandleFunc) error, func(), rabbitevents.BindFunc, rabbitevents.BindFunc, error) {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "ReceiveMultiple", arg0, arg1)
 	ret0, _ := ret[0].(func(rabbitevents.MessageHandleFunc) error)
 	ret1, _ := ret[1].(func())
-	ret2, _ := ret[2].(func(string, map[string]interface{}))
-	ret3, _ := ret[3].(error)
-	return ret0, ret1, ret2, ret3
+	ret2, _ := ret[2].(rabbitevents.BindFunc)
+	ret3, _ := ret[3].(rabbitevents.BindFunc)
+	ret4, _ := ret[4].(error)
+	return ret0, ret1, ret2, ret3, ret4
 }
 
 // ReceiveMultiple indicates an expected call of ReceiveMultiple.

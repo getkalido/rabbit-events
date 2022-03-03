@@ -22,6 +22,7 @@ type MessageHandler interface {
 }
 
 type MessageHandleFunc func(context.Context, []byte, map[string]interface{}) error
+type BindFunc func(routingKey string, bindArgs map[string]interface{}) error
 
 type RabbitConfig interface {
 	GetUserName() string

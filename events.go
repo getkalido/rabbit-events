@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"runtime"
+	"sync"
 )
 
 type ActionType string
@@ -35,7 +36,7 @@ type EventSource struct {
 type EventEmitter func(ctx context.Context, action ActionType, context map[string][]string, id int64, old, state interface{}) error
 type MultiEventEmitter func(ctx context.Context, action ActionType, context map[string][]string, old, state interface{}, paths map[string]int64) error
 
-type Unsubscribe func()
+type Unsubscribe func() error
 
 type EventConsumer interface {
 	Subscribe(ids []int64, handler func(*Event)) Unsubscribe
@@ -177,7 +178,7 @@ func (rem *ImplRabbitEventHandler) EmitMultiple(paths []string) MultiEventEmitte
 }
 
 func (rem *ImplRabbitEventHandler) Consume(path string, typer ...func() interface{}) (EventConsumer, error) {
-	receive, stop, bind, err := rem.rabbitEx.ReceiveMultiple(ExchangeSettings{
+	receive, stop, bind, unbind, err := rem.rabbitEx.ReceiveMultiple(ExchangeSettings{
 		Name:         rem.exchangeName,
 		ExchangeType: ExchangeTypeHeaders,
 		Durable:      true,
@@ -200,6 +201,7 @@ func (rem *ImplRabbitEventHandler) Consume(path string, typer ...func() interfac
 		receive:     receive,
 		stop:        stop,
 		bind:        bind,
+		unbind:      unbind,
 	}
 	for _, tr := range typer {
 		eo.typer = tr
@@ -210,7 +212,7 @@ func (rem *ImplRabbitEventHandler) Consume(path string, typer ...func() interfac
 
 func (rem *ImplRabbitEventHandler) ConsumeMultiple(typer ...func() interface{}) (MultiEventConsumer, error) {
 
-	receive, stop, bind, err := rem.rabbitEx.ReceiveMultiple(ExchangeSettings{
+	receive, stop, bind, unbind, err := rem.rabbitEx.ReceiveMultiple(ExchangeSettings{
 		Name:         rem.exchangeName,
 		ExchangeType: ExchangeTypeHeaders,
 		Durable:      true,
@@ -232,6 +234,7 @@ func (rem *ImplRabbitEventHandler) ConsumeMultiple(typer ...func() interface{}) 
 		receive: receive,
 		stop:    stop,
 		bind:    bind,
+		unbind:  unbind,
 	}
 	for _, tr := range typer {
 		eo.typer = tr
@@ -258,11 +261,14 @@ func Emit(ctx context.Context, rabbitIni *RabbitIni, path string, action ActionT
 }
 
 type eventObserver struct {
-	typer       func() interface{}
-	defaultPath string
-	receive     func(MessageHandleFunc) error
-	stop        func()
-	bind        func(routingKey string, bindArgs map[string]interface{})
+	typer         func() interface{}
+	defaultPath   string
+	receive       func(MessageHandleFunc) error
+	stop          func()
+	bind          BindFunc
+	unbind        BindFunc
+	listeners     map[string]interface{}
+	listenersLock sync.Mutex
 }
 
 func (eo *eventObserver) Change(ctx context.Context, data []byte, headers map[string]interface{}, handler func(*Event)) error {
@@ -293,22 +299,42 @@ func (eo *eventObserver) Change(ctx context.Context, data []byte, headers map[st
 }
 
 func (eo *eventObserver) Subscribe(ids []int64, handler func(*Event)) Unsubscribe {
+	listeners := make(map[string]map[string]interface{}, 0)
 	// if no IDs were provided, listen for everything emitted on path
 	if len(ids) == 0 {
+		listenerKey := fmt.Sprintf("%s-%s", EventPathHeaderKey, eo.defaultPath)
 		headers := map[string]interface{}{
-			"x-match": "any",
-			fmt.Sprintf("%s-%s", EventPathHeaderKey, eo.defaultPath): true,
+			"x-match":   "any",
+			listenerKey: true,
 		}
-		eo.bind("", headers)
+		listeners[listenerKey] = headers
 	}
 
 	// Bind for every ID we need to listen for
 	for _, id := range ids {
+		listenerKey := fmt.Sprintf("%s.%d", eo.defaultPath, id)
 		headers := map[string]interface{}{
 			"x-match":      "any",
 			eo.defaultPath: id,
 		}
-		eo.bind("", headers)
+		listeners[listenerKey] = headers
+	}
+
+	for listenerKey, headers := range listeners {
+		bind := func() error {
+			err := eo.bind("", headers)
+			if err != nil {
+				return err
+			}
+			eo.listenersLock.Lock()
+			defer eo.listenersLock.Unlock()
+			eo.listeners[listenerKey] = true
+			return nil
+		}
+		err := bind()
+		if err != nil {
+			panic(err)
+		}
 	}
 
 	go func() {
@@ -316,7 +342,24 @@ func (eo *eventObserver) Subscribe(ids []int64, handler func(*Event)) Unsubscrib
 			return eo.Change(ctx, data, headers, handler)
 		})
 	}()
-	return eo.stop
+
+	unsubscribe := func() error {
+		eo.listenersLock.Lock()
+		defer eo.listenersLock.Unlock()
+		for k, headers := range listeners {
+			err := eo.unbind("", headers)
+			if err != nil {
+				return err
+			}
+			_, ok := eo.listeners[k]
+			if ok {
+				delete(eo.listeners, k)
+			}
+		}
+		return nil
+	}
+
+	return unsubscribe
 }
 
 func (eo *eventObserver) SubscribeUnfiltered(handler func(*Event)) Unsubscribe {
@@ -324,10 +367,13 @@ func (eo *eventObserver) SubscribeUnfiltered(handler func(*Event)) Unsubscribe {
 }
 
 type multiEventObserver struct {
-	typer   func() interface{}
-	receive func(MessageHandleFunc) error
-	stop    func()
-	bind    func(routingKey string, bindArgs map[string]interface{})
+	typer         func() interface{}
+	receive       func(MessageHandleFunc) error
+	stop          func()
+	bind          BindFunc
+	unbind        BindFunc
+	listeners     map[string]interface{}
+	listenersLock sync.Mutex
 }
 
 func (eo *multiEventObserver) Change(ctx context.Context, data []byte, headers map[string]interface{}, handler func(*Event)) error {
@@ -361,15 +407,17 @@ func (eo *multiEventObserver) Subscribe(
 	paths map[string][]int64,
 	handler func(*Event),
 ) (Unsubscribe, error) {
-
+	// Building the headers we need to bind
+	listeners := make(map[string]map[string]interface{}, 0)
 	for path, ids := range paths {
 		// if no IDs are specified for a path, listen for all events on that path
 		if len(ids) == 0 {
+			listenerKey := fmt.Sprintf("%s-%s", EventPathHeaderKey, path)
 			headers := map[string]interface{}{
-				"x-match": "any",
-				fmt.Sprintf("%s-%s", EventPathHeaderKey, path): true,
+				"x-match":   "any",
+				listenerKey: true,
 			}
-			eo.bind("", headers)
+			listeners[listenerKey] = headers
 			continue
 		}
 		// Bind for every id we want to listen for on path.
@@ -378,7 +426,25 @@ func (eo *multiEventObserver) Subscribe(
 				"x-match": "any",
 				path:      id,
 			}
-			eo.bind("", headers)
+			listenerKey := fmt.Sprintf("%s.%d", path, id)
+			listeners[listenerKey] = headers
+		}
+	}
+
+	for listenerKey, headers := range listeners {
+		bind := func() error {
+			err := eo.bind("", headers)
+			if err != nil {
+				return err
+			}
+			eo.listenersLock.Lock()
+			defer eo.listenersLock.Unlock()
+			eo.listeners[listenerKey] = true
+			return nil
+		}
+		err := bind()
+		if err != nil {
+			return nil, err
 		}
 	}
 
@@ -388,5 +454,21 @@ func (eo *multiEventObserver) Subscribe(
 		})
 	}()
 
-	return eo.stop, nil
+	unsubscribe := func() error {
+		eo.listenersLock.Lock()
+		defer eo.listenersLock.Unlock()
+		for k, headers := range listeners {
+			err := eo.unbind("", headers)
+			if err != nil {
+				return err
+			}
+			_, ok := eo.listeners[k]
+			if ok {
+				delete(eo.listeners, k)
+			}
+		}
+		return nil
+	}
+
+	return unsubscribe, nil
 }

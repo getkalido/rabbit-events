@@ -25,7 +25,7 @@ type RabbitExchange interface {
 	SendTo(name, exchangeType string, durable, autoDelete bool, key string) MessageHandleFunc
 
 	ReceiveFrom(name, exchangeType string, durable, autoDelete bool, key string, clientName string) (func(MessageHandleFunc) error, func(), error)
-	ReceiveMultiple(exchange ExchangeSettings, queue QueueSettings) (func(MessageHandleFunc) error, func(), func(routingKey string, bindArgs map[string]interface{}), error)
+	ReceiveMultiple(exchange ExchangeSettings, queue QueueSettings) (func(MessageHandleFunc) error, func(), BindFunc, BindFunc, error)
 	Receive(exchange ExchangeSettings, queue QueueSettings) (func(MessageHandleFunc) error, func(), error)
 
 	Close() error
@@ -270,7 +270,7 @@ func (re *RabbitExchangeImpl) Receive(
 	func(),
 	error,
 ) {
-	handler, stop, _, err := re.ReceiveMultiple(exchange, queue)
+	handler, stop, _, _, err := re.ReceiveMultiple(exchange, queue)
 	return handler, stop, err
 }
 
@@ -280,7 +280,8 @@ func (re *RabbitExchangeImpl) ReceiveMultiple(
 ) (
 	func(MessageHandleFunc) error,
 	func(),
-	func(routingKey string, bindArgs map[string]interface{}),
+	BindFunc,
+	BindFunc,
 	error,
 ) {
 	retryExchangeName := fmt.Sprintf("%s-%s", exchange.Name, retryExchangeNameSuffix)
@@ -398,7 +399,7 @@ func (re *RabbitExchangeImpl) ReceiveMultiple(
 
 	channel, msgs, errChan, closer, err := getChannel()
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, nil, err
 	}
 
 	stop := make(chan struct{})
@@ -494,12 +495,20 @@ func (re *RabbitExchangeImpl) ReceiveMultiple(
 		func() {
 			close(stop)
 		},
-		func(routingKey string, bindArgs map[string]interface{}) {
-			err = channel.QueueBind(
+		func(routingKey string, bindArgs map[string]interface{}) error {
+			return channel.QueueBind(
 				queue.Name,    // queue name
 				routingKey,    // routing key
 				exchange.Name, // exchange name
 				queue.NoWait,  // no-wait
+				bindArgs,      //args
+			)
+		},
+		func(routingKey string, bindArgs map[string]interface{}) error {
+			return channel.QueueUnbind(
+				queue.Name,    // queue name
+				routingKey,    // routing key
+				exchange.Name, // exchange name
 				bindArgs,      //args
 			)
 		},
