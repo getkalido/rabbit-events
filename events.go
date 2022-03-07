@@ -36,7 +36,8 @@ type EventSource struct {
 type EventEmitter func(ctx context.Context, action ActionType, context map[string][]string, id int64, old, state interface{}) error
 type MultiEventEmitter func(ctx context.Context, action ActionType, context map[string][]string, old, state interface{}, paths map[string]int64) error
 
-type Unsubscribe func() error
+type Unsubscribe func()
+type UnsubscribeMultiple func() error
 
 type EventConsumer interface {
 	Subscribe(ids []int64, handler func(*Event)) Unsubscribe
@@ -44,7 +45,7 @@ type EventConsumer interface {
 }
 
 type MultiEventConsumer interface {
-	Subscribe(paths map[string][]int64, handler func(*Event)) (Unsubscribe, error)
+	Subscribe(paths map[string][]int64, handler func(*Event)) (UnsubscribeMultiple, error)
 }
 
 type TargetedEventConsumer func(handler func(*Event)) (func(), error)
@@ -343,20 +344,19 @@ func (eo *eventObserver) Subscribe(ids []int64, handler func(*Event)) Unsubscrib
 		})
 	}()
 
-	unsubscribe := func() error {
+	unsubscribe := func() {
 		eo.listenersLock.Lock()
 		defer eo.listenersLock.Unlock()
 		for k, headers := range listeners {
 			err := eo.unbind("", headers)
 			if err != nil {
-				return err
+				panic(err)
 			}
 			_, ok := eo.listeners[k]
 			if ok {
 				delete(eo.listeners, k)
 			}
 		}
-		return nil
 	}
 
 	return unsubscribe
@@ -406,7 +406,7 @@ func (eo *multiEventObserver) Change(ctx context.Context, data []byte, headers m
 func (eo *multiEventObserver) Subscribe(
 	paths map[string][]int64,
 	handler func(*Event),
-) (Unsubscribe, error) {
+) (UnsubscribeMultiple, error) {
 	// Building the headers we need to bind
 	listeners := make(map[string]map[string]interface{}, 0)
 	for path, ids := range paths {
