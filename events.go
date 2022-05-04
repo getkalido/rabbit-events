@@ -80,11 +80,9 @@ func (rem *ImplRabbitEventHandler) Emit(path string) EventEmitter {
 			Path:   path,
 			Action: action,
 			ID:     id,
-			Source: EventSource{
-				Context: context,
-			},
-			Old:   old,
-			State: state,
+			Source: EventSource{},
+			Old:    old,
+			State:  state,
 		}
 
 		callers := make([]uintptr, 30)
