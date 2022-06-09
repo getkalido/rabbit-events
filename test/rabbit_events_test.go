@@ -162,6 +162,12 @@ var _ = Describe("RabbitEvents", func() {
 	})
 
 	Describe("Exchange ReceiveFrom", func() {
+		var closeHandlerOnce sync.Once
+		BeforeEach(func() {
+			closeHandlerOnce = sync.Once{}
+			time.Sleep(100 * time.Millisecond)
+		})
+
 		It("Should requeue the message once within a 10 seconds window if a processing error is encountered", func() {
 			ctrl := gomock.NewController(GinkgoT())
 			defer ctrl.Finish()
@@ -181,7 +187,7 @@ var _ = Describe("RabbitEvents", func() {
 				"requeue-test",
 			)
 			Expect(err).To(BeNil())
-			defer closeHandler()
+			defer closeHandlerOnce.Do(closeHandler)
 			replies := make(chan struct{})
 			doOnce := make(chan struct{}, 1)
 			go func() {
@@ -210,6 +216,7 @@ var _ = Describe("RabbitEvents", func() {
 			}
 			Expect(noReplies).To(Equal(2))
 		})
+
 		It("Should requeue the message once within a 10 seconds window if another type of temporary error is enountered", func() {
 
 			ctrl := gomock.NewController(GinkgoT())
@@ -230,7 +237,7 @@ var _ = Describe("RabbitEvents", func() {
 				"requeue-test",
 			)
 			Expect(err).To(BeNil())
-			defer closeHandler()
+			defer closeHandlerOnce.Do(closeHandler)
 			replies := make(chan struct{})
 			doOnce := make(chan struct{}, 1)
 			go func() {
@@ -259,6 +266,7 @@ var _ = Describe("RabbitEvents", func() {
 			}
 			Expect(noReplies).To(Equal(2))
 		})
+
 		It("Should not reuqueue the message if an error that is not temporary is encountered", func() {
 			ctrl := gomock.NewController(GinkgoT())
 			defer ctrl.Finish()
@@ -278,7 +286,8 @@ var _ = Describe("RabbitEvents", func() {
 				"requeue-test",
 			)
 			Expect(err).To(BeNil())
-			defer closeHandler()
+			defer closeHandlerOnce.Do(closeHandler)
+
 			replies := make(chan struct{})
 			go func() {
 				handler(func(ctx context.Context, message []byte, _ map[string]interface{}) (err error) {
