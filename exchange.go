@@ -156,7 +156,10 @@ func (re *RabbitExchangeImpl) SendTo(name, exchangeType string, durable, autoDel
 		defer chM.Unlock()
 		if oldVersion == version {
 			if ch != nil {
-				ch.Close()
+				err := ch.Close()
+				if err != nil {
+					log.Printf("rabbit:SendTo Replace Channel Failed. Reason: %+v", err)
+				}
 				ch = nil
 			}
 		}
