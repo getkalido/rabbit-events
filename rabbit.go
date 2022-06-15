@@ -189,9 +189,11 @@ type RabbitBatcher struct {
 	Channel            string
 }
 
-var DefaultQuiescenceTime time.Duration = time.Millisecond * 5
-var DefaultMaxDelay time.Duration = time.Millisecond * 50
-var DefualtMaxMessagesInBatch = 1000
+const (
+	DefaultQuiescenceTime     time.Duration = time.Millisecond * 5
+	DefaultMaxDelay           time.Duration = time.Millisecond * 50
+	DefualtMaxMessagesInBatch               = 1000
+)
 
 func (rb *RabbitBatcher) setup() {
 	rb.q = make(chan string, 1)
