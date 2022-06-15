@@ -281,11 +281,11 @@ func (re *RabbitExchangeImpl) ReceiveMultiple(
 	exchange ExchangeSettings,
 	queue QueueSettings,
 ) (
-	func(MessageHandleFunc) error,
-	func(),
-	BindFunc,
-	BindFunc,
-	error,
+	handler func(MessageHandleFunc) error,
+	closeHandler func(),
+	queueBindFunc BindFunc,
+	queueUnbindFunc BindFunc,
+	err error,
 ) {
 	retryExchangeName := fmt.Sprintf("%s-%s", exchange.Name, retryExchangeNameSuffix)
 	getChannel := func() (*amqp.Channel, <-chan amqp.Delivery, chan *amqp.Error, func(), error) {
