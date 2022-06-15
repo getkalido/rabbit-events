@@ -260,7 +260,10 @@ var _ = Describe("Events", func() {
 					Expect(e).To(Equal(testEvent))
 				})
 				Expect(err).To(BeNil())
-				defer unsubscribe()
+				defer func() {
+					err := unsubscribe()
+					Expect(err).To(BeNil())
+				}()
 
 				timeout := time.After(5 * time.Second)
 				select {
