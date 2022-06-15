@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"runtime"
 	"sync"
 )
@@ -288,6 +289,7 @@ func (eo *eventObserver) Change(ctx context.Context, data []byte, headers map[st
 
 	if eo.typer != nil {
 		e.State = eo.typer()
+		e.Old = eo.typer()
 	}
 
 	err := json.Unmarshal(data, e)
@@ -300,6 +302,14 @@ func (eo *eventObserver) Change(ctx context.Context, data []byte, headers map[st
 }
 
 func (eo *eventObserver) Subscribe(ids []int64, handler func(*Event)) Unsubscribe {
+	func() {
+		eo.listenersLock.Lock()
+		defer eo.listenersLock.Unlock()
+		if eo.listeners == nil {
+			eo.listeners = make(map[string]interface{})
+		}
+	}()
+
 	listeners := make(map[string]map[string]interface{}, 0)
 	// if no IDs were provided, listen for everything emitted on path
 	if len(ids) == 0 {
@@ -339,9 +349,12 @@ func (eo *eventObserver) Subscribe(ids []int64, handler func(*Event)) Unsubscrib
 	}
 
 	go func() {
-		_ = eo.receive(func(ctx context.Context, data []byte, headers map[string]interface{}) error {
+		err := eo.receive(func(ctx context.Context, data []byte, headers map[string]interface{}) error {
 			return eo.Change(ctx, data, headers, handler)
 		})
+		if err != nil {
+			log.Printf("rabbit:eventObserver:receive Failed. Reason: %+v", err)
+		}
 	}()
 
 	unsubscribe := func() {
@@ -392,6 +405,7 @@ func (eo *multiEventObserver) Change(ctx context.Context, data []byte, headers m
 
 	if eo.typer != nil {
 		e.State = eo.typer()
+		e.Old = eo.typer()
 	}
 
 	err := json.Unmarshal(data, e)
@@ -407,6 +421,14 @@ func (eo *multiEventObserver) Subscribe(
 	paths map[string][]int64,
 	handler func(*Event),
 ) (UnsubscribeMultiple, error) {
+	func() {
+		eo.listenersLock.Lock()
+		defer eo.listenersLock.Unlock()
+		if eo.listeners == nil {
+			eo.listeners = make(map[string]interface{})
+		}
+	}()
+
 	// Building the headers we need to bind
 	listeners := make(map[string]map[string]interface{}, 0)
 	for path, ids := range paths {
@@ -449,9 +471,12 @@ func (eo *multiEventObserver) Subscribe(
 	}
 
 	go func() {
-		_ = eo.receive(func(ctx context.Context, data []byte, headers map[string]interface{}) error {
+		err := eo.receive(func(ctx context.Context, data []byte, headers map[string]interface{}) error {
 			return eo.Change(ctx, data, headers, handler)
 		})
+		if err != nil {
+			log.Printf("rabbit:multiEventObserver:receive Failed. Reason: %+v", err)
+		}
 	}()
 
 	unsubscribe := func() error {
