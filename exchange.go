@@ -25,31 +25,47 @@ type RabbitExchange interface {
 	SendTo(name, exchangeType string, durable, autoDelete bool, key string) MessageHandleFunc
 
 	ReceiveFrom(name, exchangeType string, durable, autoDelete bool, key string, clientName string) (func(MessageHandleFunc) error, func(), error)
+	ReceiveMultiple(exchange ExchangeSettings, queue QueueSettings) (func(MessageHandleFunc) error, func(), BindFunc, BindFunc, error)
 	Receive(exchange ExchangeSettings, queue QueueSettings) (func(MessageHandleFunc) error, func(), error)
 
 	Close() error
 }
 
 type RabbitExchangeImpl struct {
+	rabbitIni               RabbitConfig
+	rabbitEmitConnection    *connectionManager
+	rabbitConsumeConnection *connectionManager
+}
+
+type connectionManager struct {
+	rabbitIni                      RabbitConfig
 	rabbitConnectionMutex          sync.RWMutex
 	rabbitConnectionConnectTimeout chan int
-	rabbitIni                      RabbitConfig
 	rabbitConnection               *amqp.Connection
 }
 
 func NewRabbitExchange(rabbitIni RabbitConfig) *RabbitExchangeImpl {
-	return &RabbitExchangeImpl{
+	rabbitEmitConnection := &connectionManager{
 		rabbitIni:                      rabbitIni,
 		rabbitConnectionConnectTimeout: make(chan int, 1),
+	}
+	rabbitConsumeConnection := &connectionManager{
+		rabbitIni:                      rabbitIni,
+		rabbitConnectionConnectTimeout: make(chan int, 1),
+	}
+	return &RabbitExchangeImpl{
+		rabbitIni:               rabbitIni,
+		rabbitEmitConnection:    rabbitEmitConnection,
+		rabbitConsumeConnection: rabbitConsumeConnection,
 	}
 }
 
 func (re *RabbitExchangeImpl) Close() error {
-	conn := re.readEventConnection()
-	if conn != nil && !conn.IsClosed() {
-		return conn.Close()
+	err := re.rabbitEmitConnection.closeConnection()
+	if err != nil {
+		return err
 	}
-	return nil
+	return re.rabbitConsumeConnection.closeConnection()
 }
 
 func (re *RabbitExchangeImpl) SendTo(name, exchangeType string, durable, autoDelete bool, key string) MessageHandleFunc {
@@ -80,7 +96,7 @@ func (re *RabbitExchangeImpl) SendTo(name, exchangeType string, durable, autoDel
 			defer connM.Unlock()
 			if conn == nil || conn.IsClosed() {
 				var err error
-				conn, err = re.newEventConnection(conn, re.rabbitIni)
+				conn, err = re.rabbitEmitConnection.newEventConnection(conn, re.rabbitIni)
 				if err != nil {
 					return nil, errors.Wrapf(err, "rabbit:Failed to reconnect to rabbit  %+v", err)
 				}
@@ -140,14 +156,17 @@ func (re *RabbitExchangeImpl) SendTo(name, exchangeType string, durable, autoDel
 		defer chM.Unlock()
 		if oldVersion == version {
 			if ch != nil {
-				ch.Close()
+				err := ch.Close()
+				if err != nil {
+					log.Printf("rabbit:SendTo Replace Channel Failed. Reason: %+v", err)
+				}
 				ch = nil
 			}
 		}
 
 	}
 
-	return func(ctx context.Context, message []byte) error {
+	return func(ctx context.Context, message []byte, headers map[string]interface{}) error {
 		if ctx == nil {
 			return ErrNilContext
 		}
@@ -176,13 +195,17 @@ func (re *RabbitExchangeImpl) SendTo(name, exchangeType string, durable, autoDel
 				dm = amqp.Persistent
 			}
 
+			messageHeaders := map[string]interface{}{requeueHeaderKey: 0}
+			for k, v := range headers {
+				messageHeaders[k] = v
+			}
 			err = ch.Publish(
 				name,  // exchange
 				key,   // routing key
 				false, // mandatory
 				false, // immediate
 				amqp.Publishing{
-					Headers:      map[string]interface{}{requeueHeaderKey: 0},
+					Headers:      messageHeaders,
 					ContentType:  "text/plain",
 					Body:         message,
 					DeliveryMode: dm,
@@ -216,7 +239,7 @@ func (re *RabbitExchangeImpl) ReceiveFrom(name, exchangeType string, durable, au
 		Name:       clientName,
 		RoutingKey: key,
 		AutoDelete: true,
-		Exclusive:  true,
+		Exclusive:  false,
 	})
 }
 
@@ -242,17 +265,38 @@ type QueueSettings struct {
 	Prefetch   int
 }
 
-func (re *RabbitExchangeImpl) Receive(exchange ExchangeSettings, queue QueueSettings) (func(MessageHandleFunc) error, func(), error) {
+func (re *RabbitExchangeImpl) Receive(
+	exchange ExchangeSettings,
+	queue QueueSettings,
+) (
+	func(MessageHandleFunc) error,
+	func(),
+	error,
+) {
+	handler, stop, _, _, err := re.ReceiveMultiple(exchange, queue)
+	return handler, stop, err
+}
+
+func (re *RabbitExchangeImpl) ReceiveMultiple(
+	exchange ExchangeSettings,
+	queue QueueSettings,
+) (
+	handler func(MessageHandleFunc) error,
+	closeHandler func(),
+	queueBindFunc BindFunc,
+	queueUnbindFunc BindFunc,
+	err error,
+) {
 	retryExchangeName := fmt.Sprintf("%s-%s", exchange.Name, retryExchangeNameSuffix)
 	getChannel := func() (*amqp.Channel, <-chan amqp.Delivery, chan *amqp.Error, func(), error) {
-		conn, err := re.getEventConnection()
+		conn, err := re.rabbitConsumeConnection.getEventConnection()
 
 		if err != nil {
 			return nil, nil, nil, func() {}, err
 		}
 
 		if conn.IsClosed() {
-			conn, err = re.newEventConnection(conn, re.rabbitIni)
+			conn, err = re.rabbitConsumeConnection.newEventConnection(conn, re.rabbitIni)
 			if err != nil {
 				return nil, nil, nil, func() {}, err
 			}
@@ -358,7 +402,7 @@ func (re *RabbitExchangeImpl) Receive(exchange ExchangeSettings, queue QueueSett
 
 	channel, msgs, errChan, closer, err := getChannel()
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, nil, err
 	}
 
 	stop := make(chan struct{})
@@ -389,7 +433,7 @@ func (re *RabbitExchangeImpl) Receive(exchange ExchangeSettings, queue QueueSett
 					go func(m amqp.Delivery) {
 						ctx, cancel := context.WithCancel(context.Background())
 						defer cancel()
-						err := handler(ctx, m.Body)
+						err := handler(ctx, m.Body, m.Headers)
 						if err != nil {
 							log.Printf("Error handling rabbit message Exchange: %s Queue: %s Body: [%s] %+v\n", exchange.Name, queue.Name, m.Body, err)
 							isProcessingError := IsTemporaryError(err)
@@ -411,6 +455,7 @@ func (re *RabbitExchangeImpl) Receive(exchange ExchangeSettings, queue QueueSett
 										exchange.Name,
 										retryExchangeName,
 										m.Body,
+										m.Headers,
 										int(noRequeues),
 									)
 									if err != nil {
@@ -456,7 +501,25 @@ func (re *RabbitExchangeImpl) Receive(exchange ExchangeSettings, queue QueueSett
 		},
 		func() {
 			close(stop)
-		}, nil
+		},
+		func(routingKey string, bindArgs map[string]interface{}) error {
+			return channel.QueueBind(
+				queue.Name,    // queue name
+				routingKey,    // routing key
+				exchange.Name, // exchange name
+				queue.NoWait,  // no-wait
+				bindArgs,      //args
+			)
+		},
+		func(routingKey string, bindArgs map[string]interface{}) error {
+			return channel.QueueUnbind(
+				queue.Name,    // queue name
+				routingKey,    // routing key
+				exchange.Name, // exchange name
+				bindArgs,      //args
+			)
+		},
+		nil
 }
 
 func requeueMessage(
@@ -465,6 +528,7 @@ func requeueMessage(
 	exchangeName string,
 	retryExchangeName string,
 	body []byte,
+	headers map[string]interface{},
 	noRequeues int,
 ) error {
 	expiration := int(math.Pow(10.0, float64(noRequeues)) * 1000)
@@ -488,6 +552,11 @@ func requeueMessage(
 		return err
 	}
 
+	if headers == nil {
+		headers = map[string]interface{}{}
+	}
+	headers[requeueHeaderKey] = noRequeues
+
 	err = channel.QueueBind(
 		requeueQueue.Name, // queue name
 		requeueQueue.Name, // routing key
@@ -507,7 +576,7 @@ func requeueMessage(
 		false,          // mandatory
 		false,          // immediate
 		amqp.Publishing{
-			Headers:      map[string]interface{}{requeueHeaderKey: noRequeues},
+			Headers:      headers,
 			ContentType:  "text/plain",
 			Body:         body,
 			DeliveryMode: amqp.Transient,
@@ -523,43 +592,43 @@ func getRequeueQueueName(queueName string, expiry string) string {
 /*
  getEventConnection get the connection, creating if not exists
 */
-func (re *RabbitExchangeImpl) getEventConnection() (*amqp.Connection, error) {
-	ec := re.readEventConnection()
+func (cm *connectionManager) getEventConnection() (*amqp.Connection, error) {
+	ec := cm.readEventConnection()
 	if ec != nil {
 		return ec, nil
 	}
-	return re.newEventConnection(ec, re.rabbitIni)
+	return cm.newEventConnection(ec, cm.rabbitIni)
 
 }
 
-func (re *RabbitExchangeImpl) readEventConnection() *amqp.Connection {
-	re.rabbitConnectionMutex.RLock()
-	defer re.rabbitConnectionMutex.RUnlock()
-	return re.rabbitConnection
+func (cm *connectionManager) readEventConnection() *amqp.Connection {
+	cm.rabbitConnectionMutex.RLock()
+	defer cm.rabbitConnectionMutex.RUnlock()
+	return cm.rabbitConnection
 }
 
 /*
- newEventConnection creates new connection to rabbit and sets re.rabbitConnection
+ newEventConnection creates new connection to rabbit and sets re.rabbitEmitConnection
 
  It uses rabbitConnectionConnectTimeout as a semaphore with timeout to prevent many go routines waiting to try to connect.
  It still needs to lock rabbitConnectionMutex that is used for faster read access
 */
-func (re *RabbitExchangeImpl) newEventConnection(old *amqp.Connection, rabbitIni RabbitConfig) (*amqp.Connection, error) {
+func (cm *connectionManager) newEventConnection(old *amqp.Connection, rabbitIni RabbitConfig) (*amqp.Connection, error) {
 
 	timer := time.NewTimer(rabbitIni.GetConnectTimeout())
 	defer timer.Stop()
 	select {
-	case re.rabbitConnectionConnectTimeout <- 0:
+	case cm.rabbitConnectionConnectTimeout <- 0:
 		{
-			defer func() { <-re.rabbitConnectionConnectTimeout }()
+			defer func() { <-cm.rabbitConnectionConnectTimeout }()
 
-			current := re.readEventConnection()
+			current := cm.readEventConnection()
 			if current != old {
 				return current, nil
 			}
 
-			re.rabbitConnectionMutex.Lock()
-			defer re.rabbitConnectionMutex.Unlock()
+			cm.rabbitConnectionMutex.Lock()
+			defer cm.rabbitConnectionMutex.Unlock()
 
 			conn, err := amqp.Dial(fmt.Sprintf("amqp://%s:%s@%s/", rabbitIni.GetUserName(), rabbitIni.GetPassword(), rabbitIni.GetHost()))
 
@@ -570,13 +639,13 @@ func (re *RabbitExchangeImpl) newEventConnection(old *amqp.Connection, rabbitIni
 			go func() {
 				for blocked := range conn.NotifyBlocked(make(chan amqp.Blocking)) {
 					if blocked.Active {
-						log.Printf("rabbit:eventConnection server is blocked because %s", blocked.Reason)
+						log.Printf("rabbit:eventEmitConnection server is blocked because %s", blocked.Reason)
 					}
 				}
 			}()
 
-			re.rabbitConnection = conn
-			return re.rabbitConnection, nil
+			cm.rabbitConnection = conn
+			return cm.rabbitConnection, nil
 		}
 	case <-timer.C:
 		{
@@ -585,12 +654,19 @@ func (re *RabbitExchangeImpl) newEventConnection(old *amqp.Connection, rabbitIni
 	}
 }
 
+func (cm *connectionManager) closeConnection() error {
+	if cm.rabbitConnection != nil && !cm.rabbitConnection.IsClosed() {
+		return cm.rabbitConnection.Close()
+	}
+	return nil
+}
+
 func Fanout(listen func(MessageHandleFunc) error) (func(MessageHandleFunc) func(), error) {
 	listeners := make(map[int64]MessageHandleFunc)
 	lock := sync.RWMutex{}
 	var counter int64 = 0
 
-	err := listen(func(ctx context.Context, message []byte) error {
+	err := listen(func(ctx context.Context, message []byte, headers map[string]interface{}) error {
 		if ctx == nil {
 			return ErrNilContext
 		}
@@ -601,7 +677,7 @@ func Fanout(listen func(MessageHandleFunc) error) (func(MessageHandleFunc) func(
 		lock.RLock()
 		defer lock.RUnlock()
 		for _, listener := range listeners {
-			err := listener(ctx, message)
+			err := listener(ctx, message, headers)
 			if err != nil {
 				return err
 			}
