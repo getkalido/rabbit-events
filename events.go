@@ -87,7 +87,10 @@ func (rem *ImplRabbitEventHandler) sendEvent(
 	paths map[string]int64,
 ) error {
 	messageHeaders := map[string]interface{}{
-		EventActionHeaderKey: action,
+		// Must be explicitly made one of the types supported by AMQP, since
+		// the library doesn't provide an interface to convert values to
+		// supported types.
+		EventActionHeaderKey: string(action),
 	}
 	lastPath := ""
 	lastID := int64(0)
