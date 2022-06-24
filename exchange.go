@@ -336,6 +336,20 @@ func (re *RabbitExchangeImpl) ReceiveMultiple(
 			return nil, nil, nil, closeChan, err
 		}
 
+		err = ch.ExchangeDeclare(
+			retryExchangeName, // name
+			retryExchangeType, // type
+			true,              // durable
+			false,             // delete when unused
+			false,             // exclusive
+			false,             // no-wait
+			nil,               // args
+		)
+
+		if err != nil {
+			return nil, nil, nil, closeChan, err
+		}
+
 		q, err := ch.QueueDeclare(
 			queue.Name,       // name
 			queue.Durable,    // durable
