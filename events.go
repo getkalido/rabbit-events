@@ -183,21 +183,28 @@ func (rem *ImplRabbitEventHandler) EmitMultiple(paths []string) MultiEventEmitte
 }
 
 func (rem *ImplRabbitEventHandler) Consume(path string, typer ...func() interface{}) (EventConsumer, error) {
-	receive, stop, bind, unbind, err := rem.rabbitEx.ReceiveMultiple(ExchangeSettings{
-		Name:         rem.exchangeName,
-		ExchangeType: ExchangeTypeHeaders,
-		Durable:      true,
-		AutoDelete:   false,
-		Exclusive:    false,
-		NoWait:       false,
-		Args:         nil,
-	}, QueueSettings{
-		Name:       "",
-		RoutingKey: "",
-		AutoDelete: true,
-		Exclusive:  false,
-		Prefetch:   rem.prefetchCount,
-	})
+	receive, stop, bind, unbind, err := rem.rabbitEx.ReceiveMultiple(
+		ExchangeSettings{
+			Name:         rem.exchangeName,
+			ExchangeType: ExchangeTypeHeaders,
+			Durable:      true,
+			AutoDelete:   false,
+			Exclusive:    false,
+			NoWait:       false,
+			Args:         nil,
+		},
+		QueueSettings{
+			Name:       "",
+			RoutingKey: "",
+			AutoDelete: true,
+			Exclusive:  false,
+			Prefetch:   rem.prefetchCount,
+			BindArgs: map[string]interface{}{
+				"x-match": "any",
+				fmt.Sprintf("%s-%s", EventPathHeaderKey, path): true,
+			},
+		},
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -217,21 +224,24 @@ func (rem *ImplRabbitEventHandler) Consume(path string, typer ...func() interfac
 
 func (rem *ImplRabbitEventHandler) ConsumeMultiple(typer ...func() interface{}) (MultiEventConsumer, error) {
 
-	receive, stop, bind, unbind, err := rem.rabbitEx.ReceiveMultiple(ExchangeSettings{
-		Name:         rem.exchangeName,
-		ExchangeType: ExchangeTypeHeaders,
-		Durable:      true,
-		AutoDelete:   false,
-		Exclusive:    false,
-		NoWait:       false,
-		Args:         nil,
-	}, QueueSettings{
-		Name:       "",
-		RoutingKey: "",
-		AutoDelete: true,
-		Exclusive:  true,
-		Prefetch:   rem.prefetchCount,
-	})
+	receive, stop, bind, unbind, err := rem.rabbitEx.ReceiveMultiple(
+		ExchangeSettings{
+			Name:         rem.exchangeName,
+			ExchangeType: ExchangeTypeHeaders,
+			Durable:      true,
+			AutoDelete:   false,
+			Exclusive:    false,
+			NoWait:       false,
+			Args:         nil,
+		},
+		QueueSettings{
+			Name:       "",
+			RoutingKey: "",
+			AutoDelete: true,
+			Exclusive:  true,
+			Prefetch:   rem.prefetchCount,
+		},
+	)
 	if err != nil {
 		return nil, err
 	}
