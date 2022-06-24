@@ -14,14 +14,14 @@ jobs:
   build:
     services:
       rabbitmq:
-        image: rabbitmq:3.7-alpine
+        image: rabbitmq:3.9-alpine
         ports:
           - 5672:5672
     name: Build
-    runs-on: ubuntu-18.04
+    runs-on: ubuntu-20.04
     steps:
     - name: Set up Go 1.15.8
-      uses: actions/setup-go@v2
+      uses: actions/setup-go@v3
       with:
         go-version: 1.15.8
       id: go
