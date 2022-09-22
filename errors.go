@@ -39,8 +39,8 @@ func IsTemporaryError(err error) bool {
 }
 
 type MessageError struct {
-	message amqp.Delivery
 	err     error
+	message amqp.Delivery
 }
 
 func NewMessageError(message amqp.Delivery, err error) *MessageError {
@@ -53,4 +53,8 @@ func (me *MessageError) Error() string {
 
 func (me *MessageError) Unwrap() error {
 	return me.err
+}
+
+func (me *MessageError) GetMessage() amqp.Delivery {
+	return me.message
 }
