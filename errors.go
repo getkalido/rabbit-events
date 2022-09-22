@@ -44,7 +44,7 @@ type MessageError struct {
 }
 
 func NewMessageError(message amqp.Delivery, err error) *MessageError {
-	return &MessageError{err, message}
+	return &MessageError{err: err, message: message}
 }
 
 func (me *MessageError) Error() string {
