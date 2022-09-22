@@ -27,7 +27,7 @@ type RabbitExchange interface {
 	ReceiveFrom(name, exchangeType string, durable, autoDelete bool, key string, clientName string) (func(MessageHandleFunc) error, func(), error)
 	Receive(exchange ExchangeSettings, queue QueueSettings) (func(MessageHandleFunc) error, func(), error)
 
-	BulkReceiveFrom(name, exchangeType string, durable, autoDelete bool, key string, clientName string, maxWait int) (func(BulkMessageHandleFunc) error, func(), error)
+	BulkReceiveFrom(name, exchangeType string, durable, autoDelete bool, key string, clientName string, prefetchCount int, maxWait int) (func(BulkMessageHandleFunc) error, func(), error)
 	BulkReceive(exchange ExchangeSettings, queue QueueSettings, maxWait int) (func(BulkMessageHandleFunc) error, func(), error)
 
 	Close() error
@@ -221,6 +221,31 @@ func (re *RabbitExchangeImpl) ReceiveFrom(name, exchangeType string, durable, au
 		AutoDelete: true,
 		Exclusive:  true,
 	})
+}
+
+func (re *RabbitExchangeImpl) BulkReceiveFrom(
+	name, exchangeType string,
+	durable, autoDelete bool,
+	key string,
+	clientName string,
+	prefetchCount int,
+	maxWait int,
+) (func(BulkMessageHandleFunc) error, func(), error) {
+	return re.BulkReceive(ExchangeSettings{
+		Name:         name,
+		ExchangeType: exchangeType,
+		Durable:      durable,
+		AutoDelete:   autoDelete,
+		Exclusive:    false,
+		NoWait:       false,
+		Args:         nil,
+	}, QueueSettings{
+		Name:       clientName,
+		RoutingKey: key,
+		AutoDelete: true,
+		Exclusive:  true,
+		Prefetch:   prefetchCount,
+	}, maxWait)
 }
 
 type ExchangeSettings struct {
@@ -478,6 +503,64 @@ func (re *RabbitExchangeImpl) BulkReceive(exchange ExchangeSettings, queue Queue
 	stop := make(chan struct{})
 	return func(handler BulkMessageHandleFunc) error {
 			defer closer()
+			batch := make([]amqp.Delivery, 0, queue.Prefetch)
+			timerDuration := time.Duration(maxWait) * time.Millisecond
+			fillWaitTimer := time.NewTimer(timerDuration)
+			handleMessages := func(messages []amqp.Delivery) {
+				if len(messages) == 0 {
+					return
+				}
+				ctx, cancel := context.WithCancel(context.Background())
+				defer cancel()
+				errors := handler(ctx, messages)
+				erroredMessages := make(map[string]struct{})
+				if len(errors) > 0 {
+					for _, msgError := range errors {
+						m := msgError.message
+						err := msgError.err
+						erroredMessages[m.MessageId] = struct{}{}
+						log.Printf("Error handling rabbit message Exchange: %s Queue: %s Body: [%s] %+v\n", exchange.Name, queue.Name, m.Body, err)
+						isProcessingError := IsTemporaryError(err)
+						err = m.Nack(false, false)
+						if err != nil {
+							log.Printf("Error Nack rabbit message %+v\n", err)
+						}
+						if isProcessingError {
+							requeuesObj, ok := m.Headers[requeueHeaderKey]
+							if !ok {
+								continue
+							}
+							noRequeues, ok := requeuesObj.(int32)
+							if ok && noRequeues < maxRequeueNo {
+								noRequeues++
+								err = requeueMessage(
+									channel,
+									queue,
+									exchange.Name,
+									retryExchangeName,
+									m.Body,
+									int(noRequeues),
+								)
+								if err != nil {
+									log.Printf("Error requeueing message %+v\n", err)
+								}
+							}
+						}
+					}
+					for _, m := range messages {
+						if _, ok := erroredMessages[m.MessageId]; !ok {
+							m.Ack(false)
+						}
+					}
+				} else {
+					// If none of the messages resulted in errors, ack multiple (the whole prefetched batch)
+					err = messages[0].Ack(true)
+					if err != nil {
+						log.Printf("Error Ack rabbit message %+v\n", err)
+						return
+					}
+				}
+			}
 			for {
 				// If the `msgs` channel is no longer valid, then we need to open a new one
 				// If that attempt fails, the channel will remain invalid, so we will try again, until we succeed
@@ -492,63 +575,6 @@ func (re *RabbitExchangeImpl) BulkReceive(exchange ExchangeSettings, queue Queue
 				if msgs == nil {
 					continue
 				}
-				batch := make([]amqp.Delivery, 0, queue.Prefetch)
-				fillWaitTimer := time.NewTimer(time.Duration(maxWait) * time.Millisecond)
-				handleMessages := func(messages []amqp.Delivery) {
-					if len(messages) == 0 {
-						return
-					}
-					ctx, cancel := context.WithCancel(context.Background())
-					defer cancel()
-					errors := handler(ctx, messages)
-					erroredMessages := make(map[string]struct{})
-					if len(errors) > 0 {
-						for _, msgError := range errors {
-							m := msgError.message
-							err := msgError.err
-							erroredMessages[m.MessageId] = struct{}{}
-							log.Printf("Error handling rabbit message Exchange: %s Queue: %s Body: [%s] %+v\n", exchange.Name, queue.Name, m.Body, err)
-							isProcessingError := IsTemporaryError(err)
-							err = m.Nack(false, false)
-							if err != nil {
-								log.Printf("Error Nack rabbit message %+v\n", err)
-							}
-							if isProcessingError {
-								requeuesObj, ok := m.Headers[requeueHeaderKey]
-								if !ok {
-									continue
-								}
-								noRequeues, ok := requeuesObj.(int32)
-								if ok && noRequeues < maxRequeueNo {
-									noRequeues++
-									err = requeueMessage(
-										channel,
-										queue,
-										exchange.Name,
-										retryExchangeName,
-										m.Body,
-										int(noRequeues),
-									)
-									if err != nil {
-										log.Printf("Error requeueing message %+v\n", err)
-									}
-								}
-							}
-						}
-						for _, m := range messages {
-							if _, ok := erroredMessages[m.MessageId]; !ok {
-								m.Ack(false)
-							}
-						}
-					} else {
-						// If none of the messages resulted in errors, ack multiple (the whole batch prefetched)
-						err = messages[0].Ack(true)
-						if err != nil {
-							log.Printf("Error Ack rabbit message %+v\n", err)
-							return
-						}
-					}
-				}
 				select {
 				case m, ok := <-msgs:
 					// if the channel is closed, we want to stop receiving on this one, and we need to open a new one
@@ -561,12 +587,16 @@ func (re *RabbitExchangeImpl) BulkReceive(exchange ExchangeSettings, queue Queue
 						batchCopy := batch
 						go handleMessages(batchCopy)
 						batch = make([]amqp.Delivery, 0, queue.Prefetch)
+						fillWaitTimer.Reset(timerDuration)
 					}
 				case <-fillWaitTimer.C:
-					// Not sure if this is needed
-					batchCopy := batch
-					go handleMessages(batchCopy)
-					batch = make([]amqp.Delivery, 0, queue.Prefetch)
+					if len(batch) > 0 {
+						// Not sure if this is needed
+						batchCopy := batch
+						go handleMessages(batchCopy)
+						batch = make([]amqp.Delivery, 0, queue.Prefetch)
+					}
+					fillWaitTimer.Reset(timerDuration)
 				case <-stop:
 					return nil
 

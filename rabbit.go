@@ -22,10 +22,6 @@ type MessageHandler interface {
 
 type MessageHandleFunc func(context.Context, []byte) error
 type BulkMessageHandleFunc func(context.Context, []amqp.Delivery) []*MessageError
-type MessageError struct {
-	message amqp.Delivery
-	err     error
-}
 
 type RabbitConfig interface {
 	GetUserName() string

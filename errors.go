@@ -1,6 +1,10 @@
 package rabbitevents
 
-import "errors"
+import (
+	"errors"
+
+	"github.com/streadway/amqp"
+)
 
 type EventProcessingError struct {
 	err error
@@ -32,4 +36,21 @@ func IsTemporaryError(err error) bool {
 		return IsTemporaryError(nestedErr)
 	}
 	return false
+}
+
+type MessageError struct {
+	message amqp.Delivery
+	err     error
+}
+
+func NewMessageError(message amqp.Delivery, err error) *MessageError {
+	return &MessageError{message, err}
+}
+
+func (me *MessageError) Error() string {
+	return me.err.Error()
+}
+
+func (me *MessageError) Unwrap() error {
+	return me.err
 }
