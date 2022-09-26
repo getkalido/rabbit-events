@@ -9,6 +9,7 @@ import (
 	gomock "github.com/golang/mock/gomock"
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
+	"github.com/streadway/amqp"
 
 	. "github.com/getkalido/rabbit-events"
 )
@@ -303,6 +304,169 @@ var _ = Describe("RabbitEvents", func() {
 				}
 			}
 			Expect(noReplies).To(Equal(1))
+		})
+	})
+	Describe("Exchange BulkReceiveFrom", func() {
+		It("Should receive messages in bulk", func() {
+			ctrl := gomock.NewController(GinkgoT())
+			defer ctrl.Finish()
+			mockConfig := NewMockRabbitConfig(ctrl)
+			mockConfig.EXPECT().GetHost().Return("localhost:5672")
+			mockConfig.EXPECT().GetUserName().Return("guest")
+			mockConfig.EXPECT().GetPassword().Return("guest")
+			mockConfig.EXPECT().GetConnectTimeout().Return(time.Second * 5).AnyTimes()
+			exchange := NewRabbitExchange(mockConfig)
+
+			handler, closeHandler, err := exchange.BulkReceiveFrom(
+				"test-exchange",
+				ExchangeTypeTopic,
+				false,
+				true,
+				"test.queue",
+				"requeue-test",
+				2,
+				1000*time.Millisecond,
+			)
+			handlerCalled := make(chan struct{})
+			noReplies := 0
+			Expect(err).To(BeNil())
+			defer closeHandler()
+			go func() {
+				handler(func(ctx context.Context, messages []amqp.Delivery) []*MessageError {
+					handlerCalled <- struct{}{}
+					Expect(len(messages)).To(Equal(2))
+					return nil
+				})
+			}()
+
+			sendFn := exchange.SendTo("test-exchange", ExchangeTypeTopic, false, true, "test.queue")
+			sendFn(context.Background(), []byte{})
+			sendFn(context.Background(), []byte{})
+			timer := time.NewTimer(3 * time.Second)
+		recvLoop:
+			for {
+				select {
+				case <-handlerCalled:
+					noReplies++
+					if noReplies == 1 {
+						break recvLoop
+					}
+				case <-timer.C:
+					break recvLoop
+				}
+			}
+			Expect(noReplies).To(Equal(1))
+		})
+		It("Should receive 2 messages even if the prefetch is 3 if it takes more than maxWait to get 3 messages", func() {
+			ctrl := gomock.NewController(GinkgoT())
+			defer ctrl.Finish()
+			mockConfig := NewMockRabbitConfig(ctrl)
+			mockConfig.EXPECT().GetHost().Return("localhost:5672")
+			mockConfig.EXPECT().GetUserName().Return("guest")
+			mockConfig.EXPECT().GetPassword().Return("guest")
+			mockConfig.EXPECT().GetConnectTimeout().Return(time.Second * 5).AnyTimes()
+			exchange := NewRabbitExchange(mockConfig)
+
+			handler, closeHandler, err := exchange.BulkReceiveFrom(
+				"test-exchange",
+				ExchangeTypeTopic,
+				false,
+				true,
+				"test.queue",
+				"requeue-test",
+				2,
+				100*time.Millisecond,
+			)
+			Expect(err).To(BeNil())
+			defer closeHandler()
+			handlerCalled := make(chan struct{})
+			noReplies := 0
+			go func() {
+				handler(func(ctx context.Context, messages []amqp.Delivery) []*MessageError {
+					handlerCalled <- struct{}{}
+					Expect(len(messages)).To(BeNumerically("<=", 2))
+					return nil
+				})
+			}()
+
+			sendFn := exchange.SendTo("test-exchange", ExchangeTypeTopic, false, true, "test.queue")
+			sendFn(context.Background(), []byte{})
+			sendFn(context.Background(), []byte{})
+			time.Sleep(100 * time.Millisecond)
+			sendFn(context.Background(), []byte{})
+			timer := time.NewTimer(3 * time.Second)
+		recvLoop:
+			for {
+				select {
+				case <-handlerCalled:
+					noReplies++
+					if noReplies == 2 {
+						break recvLoop
+					}
+				case <-timer.C:
+					break recvLoop
+				}
+			}
+			Expect(noReplies).To(Equal(2))
+		})
+		It("Should only requeue the message that resulted in temporary error", func() {
+			ctrl := gomock.NewController(GinkgoT())
+			defer ctrl.Finish()
+			mockConfig := NewMockRabbitConfig(ctrl)
+			mockConfig.EXPECT().GetHost().Return("localhost:5672")
+			mockConfig.EXPECT().GetUserName().Return("guest")
+			mockConfig.EXPECT().GetPassword().Return("guest")
+			mockConfig.EXPECT().GetConnectTimeout().Return(time.Second * 5).AnyTimes()
+			exchange := NewRabbitExchange(mockConfig)
+
+			handler, closeHandler, err := exchange.BulkReceiveFrom(
+				"test-exchange",
+				ExchangeTypeTopic,
+				false,
+				true,
+				"test.queue",
+				"requeue-test",
+				3,
+				1000*time.Millisecond,
+			)
+			Expect(err).To(BeNil())
+			defer closeHandler()
+			handlerCalled := make(chan struct{})
+			noReplies := 0
+			go func() {
+				handler(func(ctx context.Context, messages []amqp.Delivery) []*MessageError {
+					handlerCalled <- struct{}{}
+					if noReplies == 0 {
+						Expect(len(messages)).To(Equal(3))
+					} else {
+						Expect(len(messages)).To(Equal(1))
+						return nil
+					}
+					return []*MessageError{
+						NewMessageError(messages[0], NewEventProcessingError(errors.New("Whaaaaaa"))),
+						NewMessageError(messages[1], errors.New("Nooo")),
+					}
+				})
+			}()
+
+			sendFn := exchange.SendTo("test-exchange", ExchangeTypeTopic, false, true, "test.queue")
+			sendFn(context.Background(), []byte{})
+			sendFn(context.Background(), []byte{})
+			sendFn(context.Background(), []byte{})
+			timer := time.NewTimer(13 * time.Second)
+		recvLoop:
+			for {
+				select {
+				case <-handlerCalled:
+					noReplies++
+					if noReplies == 2 {
+						break recvLoop
+					}
+				case <-timer.C:
+					break recvLoop
+				}
+			}
+			Expect(noReplies).To(Equal(2))
 		})
 	})
 })

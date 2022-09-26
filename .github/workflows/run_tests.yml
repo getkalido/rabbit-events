@@ -4,10 +4,12 @@ on:
     types: [opened, edited, reopened, synchronize]
     branches:
       - develop
+      - topic-exchange
       - master
   push:
     branches:
       - develop
+      - topic-exchange
       - master
 
 jobs:
