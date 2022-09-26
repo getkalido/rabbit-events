@@ -325,7 +325,7 @@ var _ = Describe("RabbitEvents", func() {
 				"test.queue",
 				"requeue-test",
 				2,
-				1000,
+				1000*time.Millisecond,
 			)
 			handlerCalled := make(chan struct{})
 			noReplies := 0
@@ -375,7 +375,7 @@ var _ = Describe("RabbitEvents", func() {
 				"test.queue",
 				"requeue-test",
 				2,
-				100,
+				100*time.Millisecond,
 			)
 			Expect(err).To(BeNil())
 			defer closeHandler()
@@ -427,7 +427,7 @@ var _ = Describe("RabbitEvents", func() {
 				"test.queue",
 				"requeue-test",
 				3,
-				1000,
+				1000*time.Millisecond,
 			)
 			Expect(err).To(BeNil())
 			defer closeHandler()

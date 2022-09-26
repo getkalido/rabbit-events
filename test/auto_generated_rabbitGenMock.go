@@ -144,7 +144,7 @@ func (m *MockRabbitExchange) EXPECT() *MockRabbitExchangeMockRecorder {
 }
 
 // BulkReceive mocks base method.
-func (m *MockRabbitExchange) BulkReceive(arg0 rabbitevents.ExchangeSettings, arg1 rabbitevents.QueueSettings, arg2 int) (func(rabbitevents.BulkMessageHandleFunc) error, func(), error) {
+func (m *MockRabbitExchange) BulkReceive(arg0 rabbitevents.ExchangeSettings, arg1 rabbitevents.QueueSettings, arg2 time.Duration) (func(rabbitevents.BulkMessageHandleFunc) error, func(), error) {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "BulkReceive", arg0, arg1, arg2)
 	ret0, _ := ret[0].(func(rabbitevents.BulkMessageHandleFunc) error)
@@ -160,7 +160,7 @@ func (mr *MockRabbitExchangeMockRecorder) BulkReceive(arg0, arg1, arg2 interface
 }
 
 // BulkReceiveFrom mocks base method.
-func (m *MockRabbitExchange) BulkReceiveFrom(arg0, arg1 string, arg2, arg3 bool, arg4, arg5 string, arg6, arg7 int) (func(rabbitevents.BulkMessageHandleFunc) error, func(), error) {
+func (m *MockRabbitExchange) BulkReceiveFrom(arg0, arg1 string, arg2, arg3 bool, arg4, arg5 string, arg6 int, arg7 time.Duration) (func(rabbitevents.BulkMessageHandleFunc) error, func(), error) {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "BulkReceiveFrom", arg0, arg1, arg2, arg3, arg4, arg5, arg6, arg7)
 	ret0, _ := ret[0].(func(rabbitevents.BulkMessageHandleFunc) error)

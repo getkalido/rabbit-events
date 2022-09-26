@@ -27,8 +27,8 @@ type RabbitExchange interface {
 	ReceiveFrom(name, exchangeType string, durable, autoDelete bool, key string, clientName string) (func(MessageHandleFunc) error, func(), error)
 	Receive(exchange ExchangeSettings, queue QueueSettings) (func(MessageHandleFunc) error, func(), error)
 
-	BulkReceiveFrom(name, exchangeType string, durable, autoDelete bool, key string, clientName string, prefetchCount int, maxWait int) (func(BulkMessageHandleFunc) error, func(), error)
-	BulkReceive(exchange ExchangeSettings, queue QueueSettings, maxWait int) (func(BulkMessageHandleFunc) error, func(), error)
+	BulkReceiveFrom(name, exchangeType string, durable, autoDelete bool, key string, clientName string, prefetchCount int, maxWait time.Duration) (func(BulkMessageHandleFunc) error, func(), error)
+	BulkReceive(exchange ExchangeSettings, queue QueueSettings, maxWait time.Duration) (func(BulkMessageHandleFunc) error, func(), error)
 
 	Close() error
 }
@@ -229,7 +229,7 @@ func (re *RabbitExchangeImpl) BulkReceiveFrom(
 	key string,
 	clientName string,
 	prefetchCount int,
-	maxWait int,
+	maxWait time.Duration,
 ) (func(BulkMessageHandleFunc) error, func(), error) {
 	return re.BulkReceive(ExchangeSettings{
 		Name:         name,
@@ -492,7 +492,7 @@ func (re *RabbitExchangeImpl) Receive(exchange ExchangeSettings, queue QueueSett
 		}, nil
 }
 
-func (re *RabbitExchangeImpl) BulkReceive(exchange ExchangeSettings, queue QueueSettings, maxWait int) (func(BulkMessageHandleFunc) error, func(), error) {
+func (re *RabbitExchangeImpl) BulkReceive(exchange ExchangeSettings, queue QueueSettings, maxWait time.Duration) (func(BulkMessageHandleFunc) error, func(), error) {
 	retryExchangeName := fmt.Sprintf("%s-%s", exchange.Name, retryExchangeNameSuffix)
 
 	channel, msgs, errChan, closer, err := re.getChannel(exchange, queue, retryExchangeName)
@@ -504,8 +504,8 @@ func (re *RabbitExchangeImpl) BulkReceive(exchange ExchangeSettings, queue Queue
 	return func(handler BulkMessageHandleFunc) error {
 			defer closer()
 			batch := make([]amqp.Delivery, 0, queue.Prefetch)
-			timerDuration := time.Duration(maxWait) * time.Millisecond
-			fillWaitTimer := time.NewTimer(timerDuration)
+			// TODO: Inject the NewTimer function into the service to enable us to mock it during testing.
+			fillWaitTimer := time.NewTimer(maxWait)
 			handleMessages := func(messages []amqp.Delivery) {
 				if len(messages) == 0 {
 					return
@@ -554,7 +554,10 @@ func (re *RabbitExchangeImpl) BulkReceive(exchange ExchangeSettings, queue Queue
 					}
 				} else {
 					// If none of the messages resulted in errors, ack multiple (the whole prefetched batch)
-					err = messages[0].Ack(true)
+					// From rabbit docs: When multiple is true, this delivery and all prior unacknowledged deliveries
+					// on the same channel will be acknowledged. This is useful for batch processing
+					// of deliveries.
+					err = messages[len(messages)-1].Ack(true)
 					if err != nil {
 						log.Printf("Error Ack rabbit message %+v\n", err)
 						return
@@ -583,20 +586,21 @@ func (re *RabbitExchangeImpl) BulkReceive(exchange ExchangeSettings, queue Queue
 						continue
 					}
 					batch = append(batch, m)
+					// TODO: Disociate batch size from the prefetch count so that we can prefetch new messages
+					// while processing the batch. This will require a rework of the current recieve pattern.
 					if len(batch) == queue.Prefetch {
 						batchCopy := batch
 						go handleMessages(batchCopy)
 						batch = make([]amqp.Delivery, 0, queue.Prefetch)
-						fillWaitTimer.Reset(timerDuration)
+						fillWaitTimer.Reset(maxWait)
 					}
 				case <-fillWaitTimer.C:
 					if len(batch) > 0 {
-						// Not sure if this is needed
 						batchCopy := batch
 						go handleMessages(batchCopy)
 						batch = make([]amqp.Delivery, 0, queue.Prefetch)
 					}
-					fillWaitTimer.Reset(timerDuration)
+					fillWaitTimer.Reset(maxWait)
 				case <-stop:
 					return nil
 
