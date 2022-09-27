@@ -513,12 +513,12 @@ func (re *RabbitExchangeImpl) BulkReceive(exchange ExchangeSettings, queue Queue
 				ctx, cancel := context.WithCancel(context.Background())
 				defer cancel()
 				errors := handler(ctx, messages)
-				erroredMessages := make(map[string]struct{})
+				erroredMessages := make(map[uint64]struct{})
 				if len(errors) > 0 {
 					for _, msgError := range errors {
 						m := msgError.message
 						err := msgError.err
-						erroredMessages[m.MessageId] = struct{}{}
+						erroredMessages[m.DeliveryTag] = struct{}{}
 						log.Printf("Error handling rabbit message Exchange: %s Queue: %s Body: [%s] %+v\n", exchange.Name, queue.Name, m.Body, err)
 						isProcessingError := IsTemporaryError(err)
 						err = m.Nack(false, false)
@@ -548,7 +548,7 @@ func (re *RabbitExchangeImpl) BulkReceive(exchange ExchangeSettings, queue Queue
 						}
 					}
 					for _, m := range messages {
-						if _, ok := erroredMessages[m.MessageId]; !ok {
+						if _, ok := erroredMessages[m.DeliveryTag]; !ok {
 							m.Ack(false)
 						}
 					}
@@ -589,15 +589,13 @@ func (re *RabbitExchangeImpl) BulkReceive(exchange ExchangeSettings, queue Queue
 					// TODO: Disociate batch size from the prefetch count so that we can prefetch new messages
 					// while processing the batch. This will require a rework of the current recieve pattern.
 					if len(batch) == queue.Prefetch {
-						batchCopy := batch
-						go handleMessages(batchCopy)
+						handleMessages(batch)
 						batch = make([]amqp.Delivery, 0, queue.Prefetch)
 						fillWaitTimer.Reset(maxWait)
 					}
 				case <-fillWaitTimer.C:
 					if len(batch) > 0 {
-						batchCopy := batch
-						go handleMessages(batchCopy)
+						handleMessages(batch)
 						batch = make([]amqp.Delivery, 0, queue.Prefetch)
 					}
 					fillWaitTimer.Reset(maxWait)
@@ -612,6 +610,7 @@ func (re *RabbitExchangeImpl) BulkReceive(exchange ExchangeSettings, queue Queue
 					log.Printf("rabbit:ProcessMessages Rabbit Failed: %d - %s", e.Code, e.Reason)
 
 					if e.Code == amqp.ConnectionForced || e.Code == amqp.FrameError {
+						batch = make([]amqp.Delivery, 0, queue.Prefetch)
 						// for now only care about total connection loss
 						closer()
 						for {
