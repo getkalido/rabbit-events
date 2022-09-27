@@ -589,15 +589,13 @@ func (re *RabbitExchangeImpl) BulkReceive(exchange ExchangeSettings, queue Queue
 					// TODO: Disociate batch size from the prefetch count so that we can prefetch new messages
 					// while processing the batch. This will require a rework of the current recieve pattern.
 					if len(batch) == queue.Prefetch {
-						batchCopy := batch
-						go handleMessages(batchCopy)
+						handleMessages(batch)
 						batch = make([]amqp.Delivery, 0, queue.Prefetch)
 						fillWaitTimer.Reset(maxWait)
 					}
 				case <-fillWaitTimer.C:
 					if len(batch) > 0 {
-						batchCopy := batch
-						go handleMessages(batchCopy)
+						handleMessages(batch)
 						batch = make([]amqp.Delivery, 0, queue.Prefetch)
 					}
 					fillWaitTimer.Reset(maxWait)
