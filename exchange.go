@@ -503,6 +503,7 @@ func (re *RabbitExchangeImpl) BulkReceive(exchange ExchangeSettings, queue Queue
 	stop := make(chan struct{})
 	return func(handler BulkMessageHandleFunc) error {
 			defer closer()
+			batch := make([]amqp.Delivery, 0, queue.Prefetch)
 			// TODO: Inject the NewTimer function into the service to enable us to mock it during testing.
 			fillWaitTimer := time.NewTimer(maxWait)
 			handleMessages := func(messages []amqp.Delivery) {
@@ -512,12 +513,12 @@ func (re *RabbitExchangeImpl) BulkReceive(exchange ExchangeSettings, queue Queue
 				ctx, cancel := context.WithCancel(context.Background())
 				defer cancel()
 				errors := handler(ctx, messages)
-				erroredMessages := make(map[string]struct{})
+				erroredMessages := make(map[uint64]struct{})
 				if len(errors) > 0 {
 					for _, msgError := range errors {
 						m := msgError.message
 						err := msgError.err
-						erroredMessages[m.MessageId] = struct{}{}
+						erroredMessages[m.DeliveryTag] = struct{}{}
 						log.Printf("Error handling rabbit message Exchange: %s Queue: %s Body: [%s] %+v\n", exchange.Name, queue.Name, m.Body, err)
 						isProcessingError := IsTemporaryError(err)
 						err = m.Nack(false, false)
@@ -547,7 +548,7 @@ func (re *RabbitExchangeImpl) BulkReceive(exchange ExchangeSettings, queue Queue
 						}
 					}
 					for _, m := range messages {
-						if _, ok := erroredMessages[m.MessageId]; !ok {
+						if _, ok := erroredMessages[m.DeliveryTag]; !ok {
 							m.Ack(false)
 						}
 					}
@@ -564,7 +565,6 @@ func (re *RabbitExchangeImpl) BulkReceive(exchange ExchangeSettings, queue Queue
 				}
 			}
 			for {
-				batch := make([]amqp.Delivery, 0, queue.Prefetch)
 				// If the `msgs` channel is no longer valid, then we need to open a new one
 				// If that attempt fails, the channel will remain invalid, so we will try again, until we succeed
 				if msgs == nil {
@@ -612,6 +612,7 @@ func (re *RabbitExchangeImpl) BulkReceive(exchange ExchangeSettings, queue Queue
 					log.Printf("rabbit:ProcessMessages Rabbit Failed: %d - %s", e.Code, e.Reason)
 
 					if e.Code == amqp.ConnectionForced || e.Code == amqp.FrameError {
+						batch = make([]amqp.Delivery, 0, queue.Prefetch)
 						// for now only care about total connection loss
 						closer()
 						for {
