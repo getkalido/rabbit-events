@@ -503,7 +503,6 @@ func (re *RabbitExchangeImpl) BulkReceive(exchange ExchangeSettings, queue Queue
 	stop := make(chan struct{})
 	return func(handler BulkMessageHandleFunc) error {
 			defer closer()
-			batch := make([]amqp.Delivery, 0, queue.Prefetch)
 			// TODO: Inject the NewTimer function into the service to enable us to mock it during testing.
 			fillWaitTimer := time.NewTimer(maxWait)
 			handleMessages := func(messages []amqp.Delivery) {
@@ -565,6 +564,7 @@ func (re *RabbitExchangeImpl) BulkReceive(exchange ExchangeSettings, queue Queue
 				}
 			}
 			for {
+				batch := make([]amqp.Delivery, 0, queue.Prefetch)
 				// If the `msgs` channel is no longer valid, then we need to open a new one
 				// If that attempt fails, the channel will remain invalid, so we will try again, until we succeed
 				if msgs == nil {
