@@ -324,8 +324,9 @@ var _ = Describe("RabbitEvents", func() {
 				true,
 				"test.queue",
 				"requeue-test",
-				2,
+				11,
 				1000*time.Millisecond,
+				2,
 			)
 			handlerCalled := make(chan struct{})
 			noReplies := 0
@@ -333,8 +334,8 @@ var _ = Describe("RabbitEvents", func() {
 			defer closeHandler()
 			go func() {
 				handler(func(ctx context.Context, messages []amqp.Delivery) []*MessageError {
-					handlerCalled <- struct{}{}
 					Expect(len(messages)).To(Equal(2))
+					handlerCalled <- struct{}{}
 					return nil
 				})
 			}()
@@ -374,8 +375,9 @@ var _ = Describe("RabbitEvents", func() {
 				true,
 				"test.queue",
 				"requeue-test",
-				2,
+				10,
 				100*time.Millisecond,
+				2,
 			)
 			Expect(err).To(BeNil())
 			defer closeHandler()
@@ -383,8 +385,8 @@ var _ = Describe("RabbitEvents", func() {
 			noReplies := 0
 			go func() {
 				handler(func(ctx context.Context, messages []amqp.Delivery) []*MessageError {
-					handlerCalled <- struct{}{}
 					Expect(len(messages)).To(BeNumerically("<=", 2))
+					handlerCalled <- struct{}{}
 					return nil
 				})
 			}()
@@ -427,7 +429,8 @@ var _ = Describe("RabbitEvents", func() {
 				"test.queue",
 				"requeue-test",
 				3,
-				1000*time.Millisecond,
+				100*time.Millisecond,
+				3,
 			)
 			Expect(err).To(BeNil())
 			defer closeHandler()
@@ -435,11 +438,12 @@ var _ = Describe("RabbitEvents", func() {
 			noReplies := 0
 			go func() {
 				handler(func(ctx context.Context, messages []amqp.Delivery) []*MessageError {
-					handlerCalled <- struct{}{}
 					if noReplies == 0 {
 						Expect(len(messages)).To(Equal(3))
+						handlerCalled <- struct{}{}
 					} else {
 						Expect(len(messages)).To(Equal(1))
+						handlerCalled <- struct{}{}
 						return nil
 					}
 					return []*MessageError{
