@@ -501,6 +501,10 @@ func (re *RabbitExchangeImpl) BulkReceive(exchange ExchangeSettings, queue Queue
 		return nil, nil, err
 	}
 
+	if batchSize <= 0 {
+		batchSize = queue.Prefetch
+	}
+
 	stop := make(chan struct{})
 	return func(handler BulkMessageHandleFunc) error {
 			defer closer()
@@ -549,6 +553,10 @@ func (re *RabbitExchangeImpl) BulkReceive(exchange ExchangeSettings, queue Queue
 				}
 				for _, m := range messages {
 					if _, ok := erroredMessages[m.DeliveryTag]; !ok {
+						// We can no longer batch ack multiple if there are no errors because
+						// we no guarantee that we receive the messages in the order of their delivery
+						// tag, and processing batches in parallel we might end up acking messages we don't
+						// want acked.
 						m.Ack(false)
 					}
 				}
