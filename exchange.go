@@ -692,15 +692,37 @@ func (re *RabbitExchangeImpl) getConns() chan *connectionChannel {
 }
 
 func (re *RabbitExchangeImpl) newEventConnectionAndChannel(rabbitIni RabbitConfig) (*connectionChannel, error) {
-	conn, err := amqp.Dial(fmt.Sprintf("amqp://%s:%s@%s/", rabbitIni.GetUserName(), rabbitIni.GetPassword(), rabbitIni.GetHost()))
-	if err != nil {
-		return nil, err
+	timer := time.NewTimer(rabbitIni.GetConnectTimeout())
+	defer timer.Stop()
+	result := make(chan *connectionChannel, 1)
+	errChan := make(chan error, 1)
+	go func() {
+		conn, err := amqp.Dial(fmt.Sprintf("amqp://%s:%s@%s/", rabbitIni.GetUserName(), rabbitIni.GetPassword(), rabbitIni.GetHost()))
+		if err != nil {
+			errChan <- err
+			return
+		}
+		channel, err := conn.Channel()
+		if err != nil {
+			errChan <- err
+			return
+		}
+		result <- &connectionChannel{connection: conn, channel: channel}
+	}()
+	select {
+	case conn := <-result:
+		{
+			return conn, nil
+		}
+	case err := <-errChan:
+		{
+			return nil, err
+		}
+	case <-timer.C:
+		{
+			return nil, errors.New("Timout waiting to start connection")
+		}
 	}
-	channel, err := conn.Channel()
-	if err != nil {
-		return nil, err
-	}
-	return &connectionChannel{connection: conn, channel: channel}, nil
 }
 
 func Fanout(listen func(MessageHandleFunc) error) (func(MessageHandleFunc) func(), error) {
