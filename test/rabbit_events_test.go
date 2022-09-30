@@ -169,7 +169,7 @@ var _ = Describe("RabbitEvents", func() {
 			mockConfig.EXPECT().GetHost().Return("localhost:5672")
 			mockConfig.EXPECT().GetUserName().Return("guest")
 			mockConfig.EXPECT().GetPassword().Return("guest")
-			// mockConfig.EXPECT().GetConnectTimeout().Return(time.Second * 5)
+			mockConfig.EXPECT().GetConnectTimeout().Return(time.Second * 5)
 			exchange := NewRabbitExchange(mockConfig)
 
 			handler, closeHandler, err := exchange.ReceiveFrom(
@@ -218,7 +218,7 @@ var _ = Describe("RabbitEvents", func() {
 			mockConfig.EXPECT().GetHost().Return("localhost:5672")
 			mockConfig.EXPECT().GetUserName().Return("guest")
 			mockConfig.EXPECT().GetPassword().Return("guest")
-			// mockConfig.EXPECT().GetConnectTimeout().Return(time.Second * 5).AnyTimes()
+			mockConfig.EXPECT().GetConnectTimeout().Return(time.Second * 5).AnyTimes()
 			exchange := NewRabbitExchange(mockConfig)
 
 			handler, closeHandler, err := exchange.ReceiveFrom(
@@ -266,7 +266,7 @@ var _ = Describe("RabbitEvents", func() {
 			mockConfig.EXPECT().GetHost().Return("localhost:5672")
 			mockConfig.EXPECT().GetUserName().Return("guest")
 			mockConfig.EXPECT().GetPassword().Return("guest")
-			// mockConfig.EXPECT().GetConnectTimeout().Return(time.Second * 5).AnyTimes()
+			mockConfig.EXPECT().GetConnectTimeout().Return(time.Second * 5).AnyTimes()
 			exchange := NewRabbitExchange(mockConfig)
 
 			handler, closeHandler, err := exchange.ReceiveFrom(
@@ -314,7 +314,7 @@ var _ = Describe("RabbitEvents", func() {
 			mockConfig.EXPECT().GetHost().Return("localhost:5672")
 			mockConfig.EXPECT().GetUserName().Return("guest")
 			mockConfig.EXPECT().GetPassword().Return("guest")
-			// mockConfig.EXPECT().GetConnectTimeout().Return(time.Second * 5).AnyTimes()
+			mockConfig.EXPECT().GetConnectTimeout().Return(time.Second * 5).AnyTimes()
 			exchange := NewRabbitExchange(mockConfig)
 
 			handler, closeHandler, err := exchange.BulkReceiveFrom(
@@ -365,7 +365,7 @@ var _ = Describe("RabbitEvents", func() {
 			mockConfig.EXPECT().GetHost().Return("localhost:5672")
 			mockConfig.EXPECT().GetUserName().Return("guest")
 			mockConfig.EXPECT().GetPassword().Return("guest")
-			// mockConfig.EXPECT().GetConnectTimeout().Return(time.Second * 5).AnyTimes()
+			mockConfig.EXPECT().GetConnectTimeout().Return(time.Second * 5).AnyTimes()
 			exchange := NewRabbitExchange(mockConfig)
 
 			handler, closeHandler, err := exchange.BulkReceiveFrom(
@@ -418,7 +418,7 @@ var _ = Describe("RabbitEvents", func() {
 			mockConfig.EXPECT().GetHost().Return("localhost:5672")
 			mockConfig.EXPECT().GetUserName().Return("guest")
 			mockConfig.EXPECT().GetPassword().Return("guest")
-			// mockConfig.EXPECT().GetConnectTimeout().Return(time.Second * 5).AnyTimes()
+			mockConfig.EXPECT().GetConnectTimeout().Return(time.Second * 5).AnyTimes()
 			exchange := NewRabbitExchange(mockConfig)
 
 			handler, closeHandler, err := exchange.BulkReceiveFrom(
