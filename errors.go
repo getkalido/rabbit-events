@@ -12,6 +12,8 @@ type EventProcessingError struct {
 
 var ErrNilContext = errors.New("received nil context")
 
+var ErrExchangeClosed = errors.New("exchange has been closed")
+
 func NewEventProcessingError(err error) error {
 	return &EventProcessingError{err}
 }
