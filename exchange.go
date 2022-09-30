@@ -34,25 +34,40 @@ type RabbitExchange interface {
 }
 
 type RabbitExchangeImpl struct {
+	rabbitIni               RabbitConfig
+	rabbitEmitConnection    *connectionManager
+	rabbitConsumeConnection *connectionManager
+}
+
+type connectionManager struct {
+	rabbitIni                      RabbitConfig
 	rabbitConnectionMutex          sync.RWMutex
 	rabbitConnectionConnectTimeout chan int
-	rabbitIni                      RabbitConfig
 	rabbitConnection               *amqp.Connection
 }
 
 func NewRabbitExchange(rabbitIni RabbitConfig) *RabbitExchangeImpl {
-	return &RabbitExchangeImpl{
+	rabbitEmitConnection := &connectionManager{
 		rabbitIni:                      rabbitIni,
 		rabbitConnectionConnectTimeout: make(chan int, 1),
+	}
+	rabbitConsumeConnection := &connectionManager{
+		rabbitIni:                      rabbitIni,
+		rabbitConnectionConnectTimeout: make(chan int, 1),
+	}
+	return &RabbitExchangeImpl{
+		rabbitIni:               rabbitIni,
+		rabbitEmitConnection:    rabbitEmitConnection,
+		rabbitConsumeConnection: rabbitConsumeConnection,
 	}
 }
 
 func (re *RabbitExchangeImpl) Close() error {
-	conn := re.readEventConnection()
-	if conn != nil && !conn.IsClosed() {
-		return conn.Close()
+	err := re.rabbitEmitConnection.closeConnection()
+	if err != nil {
+		return err
 	}
-	return nil
+	return re.rabbitConsumeConnection.closeConnection()
 }
 
 func (re *RabbitExchangeImpl) SendTo(name, exchangeType string, durable, autoDelete bool, key string) MessageHandleFunc {
@@ -83,7 +98,7 @@ func (re *RabbitExchangeImpl) SendTo(name, exchangeType string, durable, autoDel
 			defer connM.Unlock()
 			if conn == nil || conn.IsClosed() {
 				var err error
-				conn, err = re.newEventConnection(conn, re.rabbitIni)
+				conn, err = re.rabbitEmitConnection.newEventConnection(conn, re.rabbitIni)
 				if err != nil {
 					return nil, errors.Wrapf(err, "rabbit:Failed to reconnect to rabbit  %+v", err)
 				}
@@ -271,19 +286,19 @@ type QueueSettings struct {
 	Prefetch   int
 }
 
-func (re *RabbitExchangeImpl) getChannel(
+func (re *RabbitExchangeImpl) getConsumeChannel(
 	exchange ExchangeSettings,
 	queue QueueSettings,
 	retryExchangeName string,
 ) (*amqp.Channel, <-chan amqp.Delivery, chan *amqp.Error, func(), error) {
-	conn, err := re.getEventConnection()
+	conn, err := re.rabbitConsumeConnection.getEventConnection()
 
 	if err != nil {
 		return nil, nil, nil, func() {}, err
 	}
 
 	if conn.IsClosed() {
-		conn, err = re.newEventConnection(conn, re.rabbitIni)
+		conn, err = re.rabbitConsumeConnection.newEventConnection(conn, re.rabbitIni)
 		if err != nil {
 			return nil, nil, nil, func() {}, err
 		}
@@ -390,7 +405,7 @@ func (re *RabbitExchangeImpl) getChannel(
 func (re *RabbitExchangeImpl) Receive(exchange ExchangeSettings, queue QueueSettings) (func(MessageHandleFunc) error, func(), error) {
 	retryExchangeName := fmt.Sprintf("%s-%s", exchange.Name, retryExchangeNameSuffix)
 
-	channel, msgs, errChan, closer, err := re.getChannel(exchange, queue, retryExchangeName)
+	channel, msgs, errChan, closer, err := re.getConsumeChannel(exchange, queue, retryExchangeName)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -402,7 +417,7 @@ func (re *RabbitExchangeImpl) Receive(exchange ExchangeSettings, queue QueueSett
 				// If the `msgs` channel is no longer valid, then we need to open a new one
 				// If that attempt fails, the channel will remain invalid, so we will try again, until we succeed
 				if msgs == nil {
-					channel, msgs, errChan, closer, err = re.getChannel(exchange, queue, retryExchangeName)
+					channel, msgs, errChan, closer, err = re.getConsumeChannel(exchange, queue, retryExchangeName)
 					if err != nil {
 						log.Printf("Cannot get a new channel, after message chanel got closed %+v\n", err)
 						time.Sleep(time.Second)
@@ -476,7 +491,7 @@ func (re *RabbitExchangeImpl) Receive(exchange ExchangeSettings, queue QueueSett
 						closer()
 						for {
 							time.Sleep(time.Millisecond * 250)
-							channel, msgs, errChan, closer, err = re.getChannel(exchange, queue, retryExchangeName)
+							channel, msgs, errChan, closer, err = re.getConsumeChannel(exchange, queue, retryExchangeName)
 							if err != nil {
 								log.Printf("Error connecting to rabbit %+v\n", err)
 							} else {
@@ -496,7 +511,7 @@ func (re *RabbitExchangeImpl) Receive(exchange ExchangeSettings, queue QueueSett
 func (re *RabbitExchangeImpl) BulkReceive(exchange ExchangeSettings, queue QueueSettings, maxWait time.Duration, batchSize int) (func(BulkMessageHandleFunc) error, func(), error) {
 	retryExchangeName := fmt.Sprintf("%s-%s", exchange.Name, retryExchangeNameSuffix)
 
-	channel, msgs, errChan, closer, err := re.getChannel(exchange, queue, retryExchangeName)
+	channel, msgs, errChan, closer, err := re.getConsumeChannel(exchange, queue, retryExchangeName)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -565,7 +580,7 @@ func (re *RabbitExchangeImpl) BulkReceive(exchange ExchangeSettings, queue Queue
 				// If the `msgs` channel is no longer valid, then we need to open a new one
 				// If that attempt fails, the channel will remain invalid, so we will try again, until we succeed
 				if msgs == nil {
-					channel, msgs, errChan, closer, err = re.getChannel(exchange, queue, retryExchangeName)
+					channel, msgs, errChan, closer, err = re.getConsumeChannel(exchange, queue, retryExchangeName)
 					if err != nil {
 						log.Printf("Cannot get a new channel, after message chanel got closed %+v\n", err)
 						time.Sleep(time.Second)
@@ -612,7 +627,7 @@ func (re *RabbitExchangeImpl) BulkReceive(exchange ExchangeSettings, queue Queue
 						closer()
 						for {
 							time.Sleep(time.Millisecond * 250)
-							channel, msgs, errChan, closer, err = re.getChannel(exchange, queue, retryExchangeName)
+							channel, msgs, errChan, closer, err = re.getConsumeChannel(exchange, queue, retryExchangeName)
 							if err != nil {
 								log.Printf("Error connecting to rabbit %+v\n", err)
 							} else {
@@ -693,19 +708,19 @@ func getRequeueQueueName(queueName string, expiry string) string {
 /*
  getEventConnection get the connection, creating if not exists
 */
-func (re *RabbitExchangeImpl) getEventConnection() (*amqp.Connection, error) {
-	ec := re.readEventConnection()
+func (cm *connectionManager) getEventConnection() (*amqp.Connection, error) {
+	ec := cm.readEventConnection()
 	if ec != nil {
 		return ec, nil
 	}
-	return re.newEventConnection(ec, re.rabbitIni)
+	return cm.newEventConnection(ec, cm.rabbitIni)
 
 }
 
-func (re *RabbitExchangeImpl) readEventConnection() *amqp.Connection {
-	re.rabbitConnectionMutex.RLock()
-	defer re.rabbitConnectionMutex.RUnlock()
-	return re.rabbitConnection
+func (cm *connectionManager) readEventConnection() *amqp.Connection {
+	cm.rabbitConnectionMutex.RLock()
+	defer cm.rabbitConnectionMutex.RUnlock()
+	return cm.rabbitConnection
 }
 
 /*
@@ -714,22 +729,22 @@ func (re *RabbitExchangeImpl) readEventConnection() *amqp.Connection {
  It uses rabbitConnectionConnectTimeout as a semaphore with timeout to prevent many go routines waiting to try to connect.
  It still needs to lock rabbitConnectionMutex that is used for faster read access
 */
-func (re *RabbitExchangeImpl) newEventConnection(old *amqp.Connection, rabbitIni RabbitConfig) (*amqp.Connection, error) {
+func (cm *connectionManager) newEventConnection(old *amqp.Connection, rabbitIni RabbitConfig) (*amqp.Connection, error) {
 
 	timer := time.NewTimer(rabbitIni.GetConnectTimeout())
 	defer timer.Stop()
 	select {
-	case re.rabbitConnectionConnectTimeout <- 0:
+	case cm.rabbitConnectionConnectTimeout <- 0:
 		{
-			defer func() { <-re.rabbitConnectionConnectTimeout }()
+			defer func() { <-cm.rabbitConnectionConnectTimeout }()
 
-			current := re.readEventConnection()
+			current := cm.readEventConnection()
 			if current != old {
 				return current, nil
 			}
 
-			re.rabbitConnectionMutex.Lock()
-			defer re.rabbitConnectionMutex.Unlock()
+			cm.rabbitConnectionMutex.Lock()
+			defer cm.rabbitConnectionMutex.Unlock()
 
 			conn, err := amqp.Dial(fmt.Sprintf("amqp://%s:%s@%s/", rabbitIni.GetUserName(), rabbitIni.GetPassword(), rabbitIni.GetHost()))
 
@@ -745,14 +760,21 @@ func (re *RabbitExchangeImpl) newEventConnection(old *amqp.Connection, rabbitIni
 				}
 			}()
 
-			re.rabbitConnection = conn
-			return re.rabbitConnection, nil
+			cm.rabbitConnection = conn
+			return cm.rabbitConnection, nil
 		}
 	case <-timer.C:
 		{
 			return nil, errors.New("Timout waiting to start connection")
 		}
 	}
+}
+
+func (cm *connectionManager) closeConnection() error {
+	if cm.rabbitConnection != nil && !cm.rabbitConnection.IsClosed() {
+		return cm.rabbitConnection.Close()
+	}
+	return nil
 }
 
 func Fanout(listen func(MessageHandleFunc) error) (func(MessageHandleFunc) func(), error) {
