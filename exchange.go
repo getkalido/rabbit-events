@@ -51,6 +51,7 @@ type BulkReceiver interface {
 }
 
 type RabbitExchangeImpl struct {
+	ctx                     context.Context
 	rabbitIni               RabbitConfig
 	rabbitEmitConnection    *connectionManager
 	rabbitConsumeConnection *connectionManager
@@ -79,6 +80,19 @@ func NewRabbitExchange(rabbitIni RabbitConfig) *RabbitExchangeImpl {
 	}
 }
 
+func NewRabbitExchangeWithContext(ctx context.Context, rabbitIni RabbitConfig) *RabbitExchangeImpl {
+	exchange := NewRabbitExchange(rabbitIni)
+	exchange.ctx = ctx
+	return exchange
+}
+
+func (re *RabbitExchangeImpl) Context() context.Context {
+	if re == nil || re.ctx == nil {
+		return context.Background()
+	}
+	return re.ctx
+}
+
 func (re *RabbitExchangeImpl) Close() error {
 	err := re.rabbitEmitConnection.closeConnection()
 	if err != nil {
@@ -88,13 +102,14 @@ func (re *RabbitExchangeImpl) Close() error {
 }
 
 func (re *RabbitExchangeImpl) SendTo(name, exchangeType string, durable, autoDelete bool, key string) MessageHandleFunc {
+	var (
+		conn    *amqp.Connection
+		ch      *amqp.Channel
+		version int64 = 0
 
-	var conn *amqp.Connection
-	var ch *amqp.Channel
-	var version int64 = 0
-
-	var connM sync.RWMutex
-	var chM sync.RWMutex
+		connM sync.RWMutex
+		chM   sync.RWMutex
+	)
 
 	getConnection := func() (*amqp.Connection, error) {
 		currentConn := func() *amqp.Connection {
@@ -194,8 +209,10 @@ func (re *RabbitExchangeImpl) SendTo(name, exchangeType string, durable, autoDel
 			return ctx.Err()
 		}
 
-		var firstError error
-		var try int
+		var (
+			firstError error
+			try        int
+		)
 		for try = 1; try <= 3; try++ {
 			if ctx.Err() != nil {
 				return ctx.Err()
@@ -338,6 +355,7 @@ func (re *RabbitExchangeImpl) ReceiveMultiple(
 	stop := make(chan struct{})
 	return func(handler MessageHandleFunc) error {
 			defer closer()
+			rootCtx := re.Context()
 			for {
 				// If the `msgs` channel is no longer valid, then we need to open a new one
 				// If that attempt fails, the channel will remain invalid, so we will try again, until we succeed
@@ -361,7 +379,7 @@ func (re *RabbitExchangeImpl) ReceiveMultiple(
 						continue
 					}
 					go func(m amqp.Delivery) {
-						ctx, cancel := context.WithCancel(context.Background())
+						ctx, cancel := context.WithCancel(rootCtx)
 						defer cancel()
 						err := handler(ctx, m.Body, m.Headers)
 						if err != nil {
@@ -401,6 +419,9 @@ func (re *RabbitExchangeImpl) ReceiveMultiple(
 							return
 						}
 					}(m)
+
+				case <-rootCtx.Done():
+					return nil
 
 				case <-stop:
 					return nil
@@ -583,6 +604,7 @@ func (re *RabbitExchangeImpl) BulkReceive(exchange ExchangeSettings, queue Queue
 	stop := make(chan struct{})
 	return func(handler BulkMessageHandleFunc) error {
 			defer closer()
+			rootCtx := re.Context()
 			batch := make([]amqp.Delivery, 0, batchSize)
 			// TODO: Inject the NewTimer function into the service to enable us to mock it during testing.
 			fillWaitTimer := time.NewTimer(maxWait)
@@ -590,7 +612,7 @@ func (re *RabbitExchangeImpl) BulkReceive(exchange ExchangeSettings, queue Queue
 				if len(messages) == 0 {
 					return
 				}
-				ctx, cancel := context.WithCancel(context.Background())
+				ctx, cancel := context.WithCancel(rootCtx)
 				defer cancel()
 				errors := handler(ctx, messages)
 				erroredMessages := make(map[uint64]struct{})
@@ -672,6 +694,10 @@ func (re *RabbitExchangeImpl) BulkReceive(exchange ExchangeSettings, queue Queue
 						batch = make([]amqp.Delivery, 0, batchSize)
 					}
 					fillWaitTimer.Reset(maxWait)
+
+				case <-rootCtx.Done():
+					return nil
+
 				case <-stop:
 					return nil
 
