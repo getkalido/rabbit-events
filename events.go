@@ -237,7 +237,9 @@ func (eo *eventObserver) SubscribeUnfiltered(handler func(*Event)) Unsubscribe {
 	listenerID := eo.nextGlobalListenerID
 	eo.nextGlobalListenerID++
 
-	eo.globalListeners = make(map[int64]func(*Event))
+	if eo.globalListeners == nil {
+		eo.globalListeners = make(map[int64]func(*Event))
+	}
 
 	eo.globalListeners[listenerID] = handler
 	return func() {
