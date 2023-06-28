@@ -183,12 +183,16 @@ var _ = Describe("RabbitEvents", func() {
 			Expect(err).To(BeNil())
 			defer closeHandler()
 			replies := make(chan struct{})
-			doOnce := make(chan struct{}, 1)
+			timesDone := 0
 			go func() {
 				handler(func(ctx context.Context, message []byte) (err error) {
 					replies <- struct{}{}
-					doOnce <- struct{}{}
-					return NewEventProcessingError(errors.New("Whaaaaaa"))
+					timesDone++
+					if timesDone == 1 {
+						return NewEventProcessingError(errors.New("Whaaaaaa"))
+					} else {
+						return nil
+					}
 				})
 			}()
 
@@ -232,12 +236,16 @@ var _ = Describe("RabbitEvents", func() {
 			Expect(err).To(BeNil())
 			defer closeHandler()
 			replies := make(chan struct{})
-			doOnce := make(chan struct{}, 1)
+			timesDone := 0
 			go func() {
 				handler(func(ctx context.Context, message []byte) (err error) {
 					replies <- struct{}{}
-					doOnce <- struct{}{}
-					return NewTestError(errors.New("This should result in a requeueing as well"))
+					timesDone++
+					if timesDone == 1 {
+						return NewTestError(errors.New("This should result in a requeueing as well"))
+					} else {
+						return nil
+					}
 				})
 			}()
 
