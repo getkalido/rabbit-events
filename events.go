@@ -182,6 +182,7 @@ func (eo *eventObserver) Change(ctx context.Context, data []byte) error {
 	e := &Event{}
 
 	if eo.typer != nil {
+		e.Old = eo.typer()
 		e.State = eo.typer()
 	}
 
