@@ -439,8 +439,13 @@ func (re *RabbitExchangeImpl) Receive(exchange ExchangeSettings, queue QueueSett
 
 	logger := re.log()
 	stop := make(chan struct{})
+	stopped := make(chan struct{})
 	return func(handler MessageHandleFunc) error {
+			var wg sync.WaitGroup
+			defer close(stopped)
 			defer closer()
+			defer wg.Wait()
+
 			for {
 				// If the `msgs` channel is no longer valid, then we need to open a new one
 				// If that attempt fails, the channel will remain invalid, so we will try again, until we succeed
@@ -463,7 +468,9 @@ func (re *RabbitExchangeImpl) Receive(exchange ExchangeSettings, queue QueueSett
 						msgs = nil
 						continue
 					}
+					wg.Add(1)
 					go func(m amqp.Delivery) {
+						defer wg.Done()
 						ctx, cancel := context.WithCancel(context.Background())
 						defer cancel()
 						err := handler(ctx, m.Body)
@@ -544,6 +551,7 @@ func (re *RabbitExchangeImpl) Receive(exchange ExchangeSettings, queue QueueSett
 		},
 		func() {
 			close(stop)
+			<-stopped
 		}, nil
 }
 

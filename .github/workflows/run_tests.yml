@@ -41,6 +41,7 @@ jobs:
         cache: true
 
     - name: Test
+      timeout-minutes: 10
       run: |
         export PATH=$PATH:/tmp/protoc/bin:/home/runner/go/bin
         export GO111MODULE=on
