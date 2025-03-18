@@ -4,10 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
+	"log/slog"
+	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 
+	slogformatter "github.com/samber/slog-formatter"
 	"github.com/streadway/amqp"
 )
 
@@ -30,6 +33,33 @@ type RabbitConfig interface {
 	GetConnectTimeout() time.Duration
 }
 
+var defaultLogger atomic.Pointer[slog.Logger]
+
+func DefaultLogger() *slog.Logger {
+	return defaultLogger.Load()
+}
+
+func SetDefaultLogger(logger *slog.Logger) {
+	defaultLogger.Store(logger)
+}
+
+func init() {
+	defaultLogger.Store(
+		slog.New(
+			slogformatter.NewFormatterHandler(
+				slogformatter.ErrorFormatter("reason"),
+			)(
+				slog.NewJSONHandler(
+					os.Stderr,
+					&slog.HandlerOptions{
+						Level: slog.LevelDebug,
+					},
+				),
+			),
+		),
+	)
+}
+
 // ProcessDirectMessage Processes messages from the `exchange` queue. All calls bind to the same queue, and messages are load balanced over them.
 // An error from the MessageHandler.HandleMessage Will caue messages not to be acked (and retried)
 func ProcessDirectMessage(rabbitIni RabbitConfig, exchange, routingKey string, handler MessageHandler) {
@@ -39,17 +69,17 @@ func ProcessDirectMessage(rabbitIni RabbitConfig, exchange, routingKey string, h
 		conn, err := amqp.Dial(fmt.Sprintf("amqp://%s:%s@%s/", rabbitIni.GetUserName(), rabbitIni.GetPassword(), rabbitIni.GetHost()))
 
 		if err != nil {
-			log.Printf("rabbit:ProcessDirectMessage:Dial Failed. Reason: %+v", err)
+			DefaultLogger().Error("rabbit:ProcessDirectMessage:Dial Failed", slog.Any("reason", err))
 			continue
 		}
 
 		ch, err := conn.Channel()
 
 		if err != nil {
-			log.Printf("rabbit:ProcessDirectMessage:Channel Failed. Reason: %+v", err)
+			DefaultLogger().Error("rabbit:ProcessDirectMessage:Channel Failed", slog.Any("reason", err))
 			err = conn.Close()
 			if err != nil {
-				log.Printf("rabbit:ProcessDirectMessage:Channel Close Connection Failed. Reason: %+v", err)
+				DefaultLogger().Error("rabbit:ProcessDirectMessage:Channel Close Connection Failed", slog.Any("reason", err))
 			}
 			continue
 		}
@@ -65,14 +95,14 @@ func ProcessDirectMessage(rabbitIni RabbitConfig, exchange, routingKey string, h
 		)
 
 		if err != nil {
-			log.Printf("rabbit:ProcessDirectMessage:ExchangeDeclare Failed. Reason: %+v", err)
+			DefaultLogger().Error("rabbit:ProcessDirectMessage:ExchangeDeclare Failed", slog.Any("reason", err))
 			err = ch.Close()
 			if err != nil {
-				log.Printf("rabbit:ProcessDirectMessage:ExchangeDeclare Close Channel Failed. Reason: %+v", err)
+				DefaultLogger().Error("rabbit:ProcessDirectMessage:ExchangeDeclare Close Channel Failed", slog.Any("reason", err))
 			}
 			err = conn.Close()
 			if err != nil {
-				log.Printf("rabbit:ProcessDirectMessage:ExchangeDeclare Close Connection Failed. Reason: %+v", err)
+				DefaultLogger().Error("rabbit:ProcessDirectMessage:ExchangeDeclare Close Connection Failed", slog.Any("reason", err))
 			}
 			continue
 		}
@@ -87,14 +117,14 @@ func ProcessDirectMessage(rabbitIni RabbitConfig, exchange, routingKey string, h
 		)
 
 		if err != nil {
-			log.Printf("rabbit:ProcessDirectMessage:QueueDeclare Failed. Reason: %+v", err)
+			DefaultLogger().Error("rabbit:ProcessDirectMessage:QueueDeclare Failed", slog.Any("reason", err))
 			err = ch.Close()
 			if err != nil {
-				log.Printf("rabbit:ProcessDirectMessage:QueueDeclare Close Channel Failed. Reason: %+v", err)
+				DefaultLogger().Error("rabbit:ProcessDirectMessage:QueueDeclare Close Channel Failed", slog.Any("reason", err))
 			}
 			err = conn.Close()
 			if err != nil {
-				log.Printf("rabbit:ProcessDirectMessage:QueueDeclare Close Connection Failed. Reason: %+v", err)
+				DefaultLogger().Error("rabbit:ProcessDirectMessage:QueueDeclare Close Connection Failed", slog.Any("reason", err))
 			}
 			continue
 		}
@@ -108,14 +138,14 @@ func ProcessDirectMessage(rabbitIni RabbitConfig, exchange, routingKey string, h
 		)
 
 		if err != nil {
-			log.Printf("rabbit:ProcessDirectMessage:QueueBind Failed. Reason: %+v", err)
+			DefaultLogger().Error("rabbit:ProcessDirectMessage:QueueBind Failed", slog.Any("reason", err))
 			err = ch.Close()
 			if err != nil {
-				log.Printf("rabbit:ProcessDirectMessage:QueueBind Close Channel Failed. Reason: %+v", err)
+				DefaultLogger().Error("rabbit:ProcessDirectMessage:QueueBind Close Channel Failed", slog.Any("reason", err))
 			}
 			err = conn.Close()
 			if err != nil {
-				log.Printf("rabbit:ProcessDirectMessage:QueueBind Close Connection Failed. Reason: %+v", err)
+				DefaultLogger().Error("rabbit:ProcessDirectMessage:QueueBind Close Connection Failed", slog.Any("reason", err))
 			}
 			continue
 		}
@@ -138,16 +168,15 @@ func ProcessDirectMessage(rabbitIni RabbitConfig, exchange, routingKey string, h
 				msg := d.Body
 				err = handler.HandleMessage(msg)
 				if err != nil {
-					log.Printf("%+v", err)
+					DefaultLogger().Error("rabbit:ProcessDirectMessage:handler.HandleMessage Failed", slog.Any("reason", err))
 					continue
 				}
 
 				err = d.Ack(false)
 				if err != nil {
-					log.Printf("%+v", err)
+					DefaultLogger().Error("rabbit:ProcessDirectMessage:d.Ack Failed", slog.Any("reason", err))
 					return
 				}
-
 			}
 		}()
 
@@ -155,8 +184,7 @@ func ProcessDirectMessage(rabbitIni RabbitConfig, exchange, routingKey string, h
 
 		err = ch.Close()
 		if err != nil {
-			log.Printf("rabbit:ProcessDirectMessage:ch.Close Failed. Reason: %+v", err)
-
+			DefaultLogger().Error("rabbit:ProcessDirectMessage:ch.Close Failed", slog.Any("reason", err))
 		}
 	}
 }
@@ -172,7 +200,7 @@ func SendChangeNotificationMessages(ctx context.Context, messages []string, chan
 
 	err := messageHandler(ctx, messages)
 	if err != nil {
-		log.Printf("Error sending rabbit messages %+v\n", err)
+		DefaultLogger().Error("Error sending rabbit messages", slog.Any("reason", err))
 	}
 }
 
