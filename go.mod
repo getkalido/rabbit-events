@@ -7,8 +7,8 @@ require (
 	github.com/onsi/ginkgo/v2 v2.22.2
 	github.com/onsi/gomega v1.36.2
 	github.com/pkg/errors v0.8.1
+	github.com/rabbitmq/amqp091-go v1.10.0
 	github.com/samber/slog-formatter v1.2.0
-	github.com/streadway/amqp v0.0.0-20190827072141-edfb9018d271
 )
 
 require (

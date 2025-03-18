@@ -6,12 +6,11 @@ import (
 	"sync"
 	"time"
 
+	. "github.com/getkalido/rabbit-events"
 	gomock "github.com/golang/mock/gomock"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	"github.com/streadway/amqp"
-
-	. "github.com/getkalido/rabbit-events"
+	amqp "github.com/rabbitmq/amqp091-go"
 )
 
 type TestError struct {

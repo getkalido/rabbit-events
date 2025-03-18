@@ -10,8 +10,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	amqp "github.com/rabbitmq/amqp091-go"
 	slogformatter "github.com/samber/slog-formatter"
-	"github.com/streadway/amqp"
 )
 
 const (
