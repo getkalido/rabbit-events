@@ -16,7 +16,7 @@ jobs:
   build:
     services:
       rabbitmq:
-        image: rabbitmq:3.7-alpine
+        image: rabbitmq:3.11-alpine
         ports:
           - 5672:5672
     name: Build
@@ -37,7 +37,7 @@ jobs:
       timeout-minutes: 10
       uses: actions/setup-go@v3
       with:
-        go-version: '1.20'
+        go-version: '1.23'
         cache: true
 
     - name: Test
@@ -45,11 +45,7 @@ jobs:
         export PATH=$PATH:/tmp/protoc/bin:/home/runner/go/bin
         export GO111MODULE=on
         export GOPROXY=https://proxy.golang.org
-        go get github.com/golang/protobuf/protoc-gen-go@v1.3.2
-        go get github.com/golang/mock/mockgen@v1.6.0
-        go get github.com/getkalido/gener8
-        go get github.com/onsi/gomega@v1.16.0
-        go get github.com/kisielk/errcheck@v1.5.0
-        go get github.com/onsi/ginkgo/ginkgo@v1.16.5
-        go install github.com/onsi/ginkgo/ginkgo
-        cd test && ginkgo
+        export GOPRIVATE=github.com/getkalido
+        go mod download
+        go install github.com/onsi/ginkgo/v2/ginkgo
+        ginkgo -r

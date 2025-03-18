@@ -3,14 +3,14 @@ package rabbitevents
 import (
 	"context"
 	"fmt"
-	"log"
+	"log/slog"
 	"math"
 	"runtime"
 	"sync"
 	"time"
 
 	"github.com/pkg/errors"
-	"github.com/streadway/amqp"
+	amqp "github.com/rabbitmq/amqp091-go"
 )
 
 const (
@@ -37,6 +37,7 @@ type RabbitExchangeImpl struct {
 	rabbitIni               RabbitConfig
 	rabbitEmitConnection    *connectionManager
 	rabbitConsumeConnection *connectionManager
+	logger                  *slog.Logger
 }
 
 type connectionManager struct {
@@ -46,7 +47,7 @@ type connectionManager struct {
 	rabbitConnection               *amqp.Connection
 }
 
-func NewRabbitExchange(rabbitIni RabbitConfig) *RabbitExchangeImpl {
+func NewRabbitExchange(rabbitIni RabbitConfig, opts ...rabbitExchangeOpt) *RabbitExchangeImpl {
 	rabbitEmitConnection := &connectionManager{
 		rabbitIni:                      rabbitIni,
 		rabbitConnectionConnectTimeout: make(chan int, 1),
@@ -55,11 +56,35 @@ func NewRabbitExchange(rabbitIni RabbitConfig) *RabbitExchangeImpl {
 		rabbitIni:                      rabbitIni,
 		rabbitConnectionConnectTimeout: make(chan int, 1),
 	}
-	return &RabbitExchangeImpl{
+	re := &RabbitExchangeImpl{
 		rabbitIni:               rabbitIni,
 		rabbitEmitConnection:    rabbitEmitConnection,
 		rabbitConsumeConnection: rabbitConsumeConnection,
 	}
+	for _, opt := range opts {
+		opt(re)
+	}
+
+	if re.logger == nil {
+		re.logger = DefaultLogger()
+	}
+
+	return re
+}
+
+type rabbitExchangeOpt func(*RabbitExchangeImpl)
+
+func WithLogger(logger *slog.Logger) rabbitExchangeOpt {
+	return func(e *RabbitExchangeImpl) {
+		e.logger = logger
+	}
+}
+
+func (re *RabbitExchangeImpl) log() *slog.Logger {
+	if re.logger == nil {
+		return DefaultLogger()
+	}
+	return re.logger
 }
 
 func (re *RabbitExchangeImpl) Close() error {
@@ -71,13 +96,14 @@ func (re *RabbitExchangeImpl) Close() error {
 }
 
 func (re *RabbitExchangeImpl) SendTo(name, exchangeType string, durable, autoDelete bool, key string) MessageHandleFunc {
-
 	var conn *amqp.Connection
 	var ch *amqp.Channel
 	var version int64 = 0
 
 	var connM sync.RWMutex
 	var chM sync.RWMutex
+
+	logger := re.log()
 
 	getConnection := func() (*amqp.Connection, error) {
 		currentConn := func() *amqp.Connection {
@@ -98,7 +124,7 @@ func (re *RabbitExchangeImpl) SendTo(name, exchangeType string, durable, autoDel
 			defer connM.Unlock()
 			if conn == nil || conn.IsClosed() {
 				var err error
-				conn, err = re.rabbitEmitConnection.newEventConnection(conn, re.rabbitIni)
+				conn, err = re.rabbitEmitConnection.newEventConnection(logger, conn, re.rabbitIni)
 				if err != nil {
 					return nil, errors.Wrapf(err, "rabbit:Failed to reconnect to rabbit  %+v", err)
 				}
@@ -291,14 +317,15 @@ func (re *RabbitExchangeImpl) getConsumeChannel(
 	queue QueueSettings,
 	retryExchangeName string,
 ) (*amqp.Channel, <-chan amqp.Delivery, chan *amqp.Error, func(), error) {
-	conn, err := re.rabbitConsumeConnection.getEventConnection()
+	logger := re.log()
+	conn, err := re.rabbitConsumeConnection.getEventConnection(logger)
 
 	if err != nil {
 		return nil, nil, nil, func() {}, err
 	}
 
 	if conn.IsClosed() {
-		conn, err = re.rabbitConsumeConnection.newEventConnection(conn, re.rabbitIni)
+		conn, err = re.rabbitConsumeConnection.newEventConnection(logger, conn, re.rabbitIni)
 		if err != nil {
 			return nil, nil, nil, func() {}, err
 		}
@@ -312,7 +339,7 @@ func (re *RabbitExchangeImpl) getConsumeChannel(
 	closeChan := func() {
 		err = ch.Close()
 		if err != nil {
-			log.Printf("rabbit:ProcessMessage:Consume Close Channel Failed. Reason: %+v", err)
+			logger.Error("rabbit:ProcessMessage:Consume Close Channel Failed", slog.Any("reason", err))
 		}
 	}
 
@@ -321,7 +348,7 @@ func (re *RabbitExchangeImpl) getConsumeChannel(
 	}
 	err = ch.Qos(queue.Prefetch, 0, false)
 	if err != nil {
-		log.Printf("rabbit:ProcessMessage:Consume Qos. Reason: %+v", err)
+		logger.Error("rabbit:ProcessMessage:Consume Qos. Reason: %+v", slog.Any("reason", err))
 	}
 
 	err = ch.ExchangeDeclare(
@@ -362,7 +389,7 @@ func (re *RabbitExchangeImpl) getConsumeChannel(
 	)
 
 	if err != nil {
-		log.Printf("rabbit:ProcessMessage:QueueDeclare Failed. Reason: %+v", err)
+		logger.Error("rabbit:ProcessMessage:QueueDeclare Failed", slog.Any("reason", err))
 		return nil, nil, nil, closeChan, err
 	}
 
@@ -375,7 +402,7 @@ func (re *RabbitExchangeImpl) getConsumeChannel(
 	)
 
 	if err != nil {
-		log.Printf("rabbit:ProcessMessage:QueueBind Failed. Reason: %+v", err)
+		logger.Error("rabbit:ProcessMessage:QueueBind Failed", slog.Any("reason", err))
 		return nil, nil, nil, closeChan, err
 	}
 
@@ -390,7 +417,7 @@ func (re *RabbitExchangeImpl) getConsumeChannel(
 	)
 
 	if err != nil {
-		log.Printf("rabbit:ProcessMessage:Consume Failed. Reason: %+v", err)
+		logger.Error("rabbit:ProcessMessage:Consume Failed", slog.Any("reason", err))
 
 		return nil, nil, nil, closeChan, err
 	}
@@ -410,6 +437,7 @@ func (re *RabbitExchangeImpl) Receive(exchange ExchangeSettings, queue QueueSett
 		return nil, nil, err
 	}
 
+	logger := re.log()
 	stop := make(chan struct{})
 	return func(handler MessageHandleFunc) error {
 			defer closer()
@@ -419,7 +447,7 @@ func (re *RabbitExchangeImpl) Receive(exchange ExchangeSettings, queue QueueSett
 				if msgs == nil {
 					channel, msgs, errChan, closer, err = re.getConsumeChannel(exchange, queue, retryExchangeName)
 					if err != nil {
-						log.Printf("Cannot get a new channel, after message chanel got closed %+v\n", err)
+						logger.Error("Cannot get a new channel, after message chanel got closed", slog.Any("reason", err))
 						time.Sleep(time.Second)
 					}
 				}
@@ -440,11 +468,17 @@ func (re *RabbitExchangeImpl) Receive(exchange ExchangeSettings, queue QueueSett
 						defer cancel()
 						err := handler(ctx, m.Body)
 						if err != nil {
-							log.Printf("Error handling rabbit message Exchange: %s Queue: %s Body: [%s] %+v\n", exchange.Name, queue.Name, m.Body, err)
+							logger.Error(
+								"Error handling rabbit message",
+								slog.String("exchange", exchange.Name),
+								slog.String("queue", queue.Name),
+								slog.String("body", string(m.Body)),
+								slog.Any("reason", err),
+							)
 							isProcessingError := IsTemporaryError(err)
 							err = m.Nack(false, false)
 							if err != nil {
-								log.Printf("Error Nack rabbit message %+v\n", err)
+								logger.Error("Error Nack rabbit message", slog.Any("reason", err))
 							}
 							if isProcessingError {
 								requeuesObj, ok := m.Headers[requeueHeaderKey]
@@ -455,6 +489,7 @@ func (re *RabbitExchangeImpl) Receive(exchange ExchangeSettings, queue QueueSett
 								if ok && noRequeues < maxRequeueNo {
 									noRequeues++
 									err = requeueMessage(
+										logger,
 										channel,
 										queue,
 										exchange.Name,
@@ -463,7 +498,7 @@ func (re *RabbitExchangeImpl) Receive(exchange ExchangeSettings, queue QueueSett
 										int(noRequeues),
 									)
 									if err != nil {
-										log.Printf("Error requeueing message %+v\n", err)
+										logger.Error("Error requeueing message", slog.Any("reason", err))
 									}
 								}
 							}
@@ -471,7 +506,7 @@ func (re *RabbitExchangeImpl) Receive(exchange ExchangeSettings, queue QueueSett
 						}
 						err = m.Ack(false)
 						if err != nil {
-							log.Printf("Error Ack rabbit message %+v\n", err)
+							logger.Error("Error Ack rabbit message", slog.Any("reason", err))
 							return
 						}
 					}(m)
@@ -484,7 +519,11 @@ func (re *RabbitExchangeImpl) Receive(exchange ExchangeSettings, queue QueueSett
 					if e == nil {
 						continue
 					}
-					log.Printf("rabbit:ProcessMessages Rabbit Failed: %d - %s", e.Code, e.Reason)
+					logger.Error(
+						"rabbit:ProcessMessages Rabbit Failed: %d - %s",
+						slog.Int("code", e.Code),
+						slog.String("reason", e.Reason),
+					)
 
 					if e.Code == amqp.ConnectionForced || e.Code == amqp.FrameError {
 						// for now only care about total connection loss
@@ -493,7 +532,7 @@ func (re *RabbitExchangeImpl) Receive(exchange ExchangeSettings, queue QueueSett
 							time.Sleep(time.Millisecond * 250)
 							channel, msgs, errChan, closer, err = re.getConsumeChannel(exchange, queue, retryExchangeName)
 							if err != nil {
-								log.Printf("Error connecting to rabbit %+v\n", err)
+								logger.Error("Error connecting to rabbit", slog.Any("reason", err))
 							} else {
 								break
 							}
@@ -520,6 +559,7 @@ func (re *RabbitExchangeImpl) BulkReceive(exchange ExchangeSettings, queue Queue
 		batchSize = queue.Prefetch
 	}
 
+	logger := re.log()
 	stop := make(chan struct{})
 	return func(handler BulkMessageHandleFunc) error {
 			defer closer()
@@ -538,11 +578,17 @@ func (re *RabbitExchangeImpl) BulkReceive(exchange ExchangeSettings, queue Queue
 					m := msgError.message
 					err := msgError.err
 					erroredMessages[m.DeliveryTag] = struct{}{}
-					log.Printf("Error handling rabbit message Exchange: %s Queue: %s Body: [%s] %+v\n", exchange.Name, queue.Name, m.Body, err)
+					logger.Error(
+						"Error handling rabbit message",
+						slog.String("exchange", exchange.Name),
+						slog.String("queue", queue.Name),
+						slog.String("body", string(m.Body)),
+						slog.Any("reason", err),
+					)
 					isProcessingError := IsTemporaryError(err)
 					err = m.Nack(false, false)
 					if err != nil {
-						log.Printf("Error Nack rabbit message %+v\n", err)
+						logger.Error("Error Nack rabbit message", slog.Any("reason", err))
 					}
 					if isProcessingError {
 						requeuesObj, ok := m.Headers[requeueHeaderKey]
@@ -553,6 +599,7 @@ func (re *RabbitExchangeImpl) BulkReceive(exchange ExchangeSettings, queue Queue
 						if ok && noRequeues < maxRequeueNo {
 							noRequeues++
 							err = requeueMessage(
+								logger,
 								channel,
 								queue,
 								exchange.Name,
@@ -561,7 +608,7 @@ func (re *RabbitExchangeImpl) BulkReceive(exchange ExchangeSettings, queue Queue
 								int(noRequeues),
 							)
 							if err != nil {
-								log.Printf("Error requeueing message %+v\n", err)
+								logger.Error("Error requeueing message", slog.Any("reason", err))
 							}
 						}
 					}
@@ -582,7 +629,10 @@ func (re *RabbitExchangeImpl) BulkReceive(exchange ExchangeSettings, queue Queue
 				if msgs == nil {
 					channel, msgs, errChan, closer, err = re.getConsumeChannel(exchange, queue, retryExchangeName)
 					if err != nil {
-						log.Printf("Cannot get a new channel, after message chanel got closed %+v\n", err)
+						logger.Error(
+							"Cannot get a new channel, after message chanel got closed",
+							slog.Any("reason", err),
+						)
 						time.Sleep(time.Second)
 					}
 				}
@@ -619,7 +669,11 @@ func (re *RabbitExchangeImpl) BulkReceive(exchange ExchangeSettings, queue Queue
 					if e == nil {
 						continue
 					}
-					log.Printf("rabbit:ProcessMessages Rabbit Failed: %d - %s", e.Code, e.Reason)
+					logger.Error(
+						"rabbit:ProcessMessages Rabbit Failed",
+						slog.Int("code", e.Code),
+						slog.String("reason", e.Reason),
+					)
 
 					if e.Code == amqp.ConnectionForced || e.Code == amqp.FrameError {
 						batch = make([]amqp.Delivery, 0, batchSize)
@@ -629,7 +683,7 @@ func (re *RabbitExchangeImpl) BulkReceive(exchange ExchangeSettings, queue Queue
 							time.Sleep(time.Millisecond * 250)
 							channel, msgs, errChan, closer, err = re.getConsumeChannel(exchange, queue, retryExchangeName)
 							if err != nil {
-								log.Printf("Error connecting to rabbit %+v\n", err)
+								logger.Error("Error connecting to rabbit", slog.Any("reason", err))
 							} else {
 								break
 							}
@@ -645,6 +699,7 @@ func (re *RabbitExchangeImpl) BulkReceive(exchange ExchangeSettings, queue Queue
 }
 
 func requeueMessage(
+	logger *slog.Logger,
 	channel *amqp.Channel,
 	queue QueueSettings,
 	exchangeName string,
@@ -669,7 +724,7 @@ func requeueMessage(
 	)
 
 	if err != nil {
-		log.Printf("rabbit:requeueMessage:QueueDeclare Failed. Reason: %+v", err)
+		logger.Error("rabbit:requeueMessage:QueueDeclare Failed", slog.Any("reason", err))
 		return err
 	}
 
@@ -682,7 +737,7 @@ func requeueMessage(
 	)
 
 	if err != nil {
-		log.Printf("rabbit:requeueMessage:QueueBind Failed. Reason: %+v", err)
+		logger.Error("rabbit:requeueMessage:QueueBind Failed", slog.Any("reason", err))
 		return err
 	}
 
@@ -706,14 +761,14 @@ func getRequeueQueueName(queueName string, expiry string) string {
 }
 
 /*
- getEventConnection get the connection, creating if not exists
+getEventConnection get the connection, creating if not exists
 */
-func (cm *connectionManager) getEventConnection() (*amqp.Connection, error) {
+func (cm *connectionManager) getEventConnection(logger *slog.Logger) (*amqp.Connection, error) {
 	ec := cm.readEventConnection()
 	if ec != nil {
 		return ec, nil
 	}
-	return cm.newEventConnection(ec, cm.rabbitIni)
+	return cm.newEventConnection(logger, ec, cm.rabbitIni)
 
 }
 
@@ -724,12 +779,12 @@ func (cm *connectionManager) readEventConnection() *amqp.Connection {
 }
 
 /*
- newEventConnection creates new connection to rabbit and sets re.rabbitConnection
+newEventConnection creates new connection to rabbit and sets re.rabbitConnection
 
- It uses rabbitConnectionConnectTimeout as a semaphore with timeout to prevent many go routines waiting to try to connect.
- It still needs to lock rabbitConnectionMutex that is used for faster read access
+It uses rabbitConnectionConnectTimeout as a semaphore with timeout to prevent many go routines waiting to try to connect.
+It still needs to lock rabbitConnectionMutex that is used for faster read access
 */
-func (cm *connectionManager) newEventConnection(old *amqp.Connection, rabbitIni RabbitConfig) (*amqp.Connection, error) {
+func (cm *connectionManager) newEventConnection(logger *slog.Logger, old *amqp.Connection, rabbitIni RabbitConfig) (*amqp.Connection, error) {
 
 	timer := time.NewTimer(rabbitIni.GetConnectTimeout())
 	defer timer.Stop()
@@ -755,7 +810,7 @@ func (cm *connectionManager) newEventConnection(old *amqp.Connection, rabbitIni 
 			go func() {
 				for blocked := range conn.NotifyBlocked(make(chan amqp.Blocking)) {
 					if blocked.Active {
-						log.Printf("rabbit:eventConnection server is blocked because %s", blocked.Reason)
+						logger.Warn("rabbit:eventConnection server is blocked", slog.String("reason", blocked.Reason))
 					}
 				}
 			}()
