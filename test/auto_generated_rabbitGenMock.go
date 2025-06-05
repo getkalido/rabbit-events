@@ -175,6 +175,34 @@ func (mr *MockRabbitExchangeMockRecorder) BulkReceiveFrom(arg0, arg1, arg2, arg3
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "BulkReceiveFrom", reflect.TypeOf((*MockRabbitExchange)(nil).BulkReceiveFrom), arg0, arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8)
 }
 
+// BulkSend mocks base method.
+func (m *MockRabbitExchange) BulkSend(arg0 rabbitevents.ExchangeSettings, arg1 rabbitevents.QueueSettings) rabbitevents.BulkSendMessageHandleFunc {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "BulkSend", arg0, arg1)
+	ret0, _ := ret[0].(rabbitevents.BulkSendMessageHandleFunc)
+	return ret0
+}
+
+// BulkSend indicates an expected call of BulkSend.
+func (mr *MockRabbitExchangeMockRecorder) BulkSend(arg0, arg1 interface{}) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "BulkSend", reflect.TypeOf((*MockRabbitExchange)(nil).BulkSend), arg0, arg1)
+}
+
+// BulkSendTo mocks base method.
+func (m *MockRabbitExchange) BulkSendTo(arg0, arg1 string, arg2, arg3 bool, arg4 string) rabbitevents.BulkSendMessageHandleFunc {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "BulkSendTo", arg0, arg1, arg2, arg3, arg4)
+	ret0, _ := ret[0].(rabbitevents.BulkSendMessageHandleFunc)
+	return ret0
+}
+
+// BulkSendTo indicates an expected call of BulkSendTo.
+func (mr *MockRabbitExchangeMockRecorder) BulkSendTo(arg0, arg1, arg2, arg3, arg4 interface{}) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "BulkSendTo", reflect.TypeOf((*MockRabbitExchange)(nil).BulkSendTo), arg0, arg1, arg2, arg3, arg4)
+}
+
 // Close mocks base method.
 func (m *MockRabbitExchange) Close() error {
 	m.ctrl.T.Helper()
