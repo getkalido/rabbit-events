@@ -4,6 +4,7 @@ go 1.23.0
 
 require (
 	github.com/golang/mock v1.7.0-rc.1
+	github.com/google/gofuzz v1.2.0
 	github.com/onsi/ginkgo/v2 v2.22.2
 	github.com/onsi/gomega v1.36.2
 	github.com/pkg/errors v0.8.1

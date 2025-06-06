@@ -14,24 +14,6 @@ import (
 )
 
 var _ = Describe("RabbitEvents", func() {
-	GetTestConfig := func(ctrl *gomock.Controller) RabbitConfig {
-		mockConfig := NewMockRabbitConfig(ctrl)
-		mockConfig.EXPECT().GetHost().Return("localhost:5672").MinTimes(2)
-		mockConfig.EXPECT().GetUserName().Return("guest").MinTimes(2)
-		mockConfig.EXPECT().GetPassword().Return("guest").MinTimes(2)
-		mockConfig.EXPECT().GetConnectTimeout().Return(time.Second * 5).MinTimes(2)
-		return mockConfig
-	}
-
-	DeleteExchanges := func(cfg RabbitConfig, exchanges ...string) {
-		RabbitDo(cfg, func(ch *amqp.Channel) {
-			for _, exchange := range exchanges {
-				Expect(ch.ExchangeDelete(exchange, false, false)).To(Succeed())
-				Expect(ch.ExchangeDelete(exchange+"-retry", false, false)).To(Succeed())
-			}
-		})
-	}
-
 	Describe("RabbitBatcher", func() {
 		It("Should send messages after quiescence", func() {
 			messagesSent := make([]string, 0)

@@ -2,9 +2,12 @@ package test
 
 import (
 	"fmt"
+	time "time"
 
 	rabbitevents "github.com/getkalido/rabbit-events"
+	gomock "github.com/golang/mock/gomock"
 	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
 	"github.com/pkg/errors"
 	amqp "github.com/rabbitmq/amqp091-go"
 )
@@ -71,4 +74,32 @@ func RabbitDo(
 
 	fn(ch)
 	return nil
+}
+
+func GetTestConfig(ctrl *gomock.Controller) rabbitevents.RabbitConfig {
+	GinkgoHelper()
+	mockConfig := NewMockRabbitConfig(ctrl)
+	mockConfig.EXPECT().GetHost().Return("localhost:5672").MinTimes(2)
+	mockConfig.EXPECT().GetUserName().Return("guest").MinTimes(2)
+	mockConfig.EXPECT().GetPassword().Return("guest").MinTimes(2)
+	mockConfig.EXPECT().GetConnectTimeout().Return(time.Second * 5).AnyTimes()
+	return mockConfig
+}
+
+func DeleteExchanges(cfg rabbitevents.RabbitConfig, exchanges ...string) {
+	RabbitDo(cfg, func(ch *amqp.Channel) {
+		for _, exchange := range exchanges {
+			Expect(ch.ExchangeDelete(exchange, false, false)).To(Succeed())
+			Expect(ch.ExchangeDelete(exchange+"-retry", false, false)).To(Succeed())
+		}
+	})
+}
+
+func DeleteQueues(cfg rabbitevents.RabbitConfig, queues ...string) {
+	RabbitDo(cfg, func(ch *amqp.Channel) {
+		for _, queue := range queues {
+			_, err := ch.QueueDelete(queue, false, false, true)
+			Expect(err).ToNot(HaveOccurred())
+		}
+	})
 }

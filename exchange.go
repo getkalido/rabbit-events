@@ -353,10 +353,6 @@ func (re *RabbitExchangeImpl) BulkSend(
 				if err != nil {
 					return nil, 0, err
 				}
-				err = ch.Confirm(false)
-				if err != nil {
-					return nil, 0, errors.Wrapf(err, "rabbit:Failed to set channel confirm mode for %s", exchange.Name)
-				}
 				version++
 				err = ch.ExchangeDeclare(
 					exchange.Name,         // name
@@ -400,7 +396,6 @@ func (re *RabbitExchangeImpl) BulkSend(
 		var (
 			firstError error
 			try        int
-			acks       []bool
 			errs       []error
 		)
 	retryBulkSend:
@@ -432,12 +427,12 @@ func (re *RabbitExchangeImpl) BulkSend(
 				}
 				bulkMessages = append(bulkMessages, msg)
 			}
-			acks, errs = sendBulk(ctx, exchange.Name, queue.RoutingKey, ch, bulkMessages)
+			errs = sendBulk(ctx, exchange.Name, queue.RoutingKey, ch, bulkMessages)
 			if len(errs) > 0 {
-				for i, ack := range acks {
+				for i, err := range errs {
 					// Clear messages which successfully sent, so we don't try to
 					// re-send them on the next try.
-					if ack {
+					if err != nil {
 						messages[i] = nil
 					}
 				}
@@ -458,14 +453,13 @@ func sendBulk(
 	topic string,
 	ch *amqp.Channel,
 	messages []*amqp.Publishing,
-) ([]bool, []error) {
+) []error {
 	var errs []error
-	confirmations := make([]*amqp.DeferredConfirmation, len(messages))
 	for i, msg := range messages {
 		if msg == nil {
 			continue
 		}
-		confirmation, err := ch.PublishWithDeferredConfirm(
+		err := ch.Publish(
 			exchangeName,
 			topic,
 			false,
@@ -479,24 +473,8 @@ func sendBulk(
 			errs[i] = err
 			continue
 		}
-		confirmations[i] = confirmation
 	}
-	acks := make([]bool, len(messages))
-	for i, confirmation := range confirmations {
-		if confirmation == nil {
-			continue
-		}
-		ack, err := confirmation.WaitContext(ctx)
-		if err != nil {
-			if len(errs) == 0 {
-				errs = make([]error, len(messages))
-			}
-			errs[i] = err
-			continue
-		}
-		acks[i] = ack
-	}
-	return acks, errs
+	return errs
 }
 
 func (re *RabbitExchangeImpl) ReceiveFrom(
