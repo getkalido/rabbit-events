@@ -192,7 +192,7 @@ var _ = Describe("RabbitEvents", func() {
 			Expect(noReplies).To(Equal(2))
 		})
 
-		It("Should requeue the message once within a 10 seconds window if another type of temporary error is enountered", func(ctx context.Context) {
+		It("Should requeue the message once within a 10 seconds window if another type of temporary error is encountered", func(ctx context.Context) {
 			ctrl := gomock.NewController(GinkgoT())
 			DeferCleanup(ctrl.Finish)
 			mockConfig := GetTestConfig(ctrl)
