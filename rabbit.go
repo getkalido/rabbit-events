@@ -25,6 +25,7 @@ type MessageHandler interface {
 
 type MessageHandleFunc func(context.Context, []byte) error
 type BulkMessageHandleFunc func(context.Context, []amqp.Delivery) []*MessageError
+type BulkSendMessageHandleFunc func(context.Context, [][]byte) []*MessageError
 
 type RabbitConfig interface {
 	GetUserName() string
