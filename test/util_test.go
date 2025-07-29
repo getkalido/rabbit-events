@@ -1,0 +1,105 @@
+package test
+
+import (
+	"fmt"
+	time "time"
+
+	rabbitevents "github.com/getkalido/rabbit-events"
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
+	"github.com/pkg/errors"
+	amqp "github.com/rabbitmq/amqp091-go"
+	gomock "go.uber.org/mock/gomock"
+)
+
+type TestError struct {
+	err error
+}
+
+func NewTestError(err error) error {
+	return &TestError{err}
+}
+
+func (e *TestError) Error() string {
+	return e.err.Error()
+}
+
+func (e *TestError) Temporary() bool {
+	return true
+}
+
+// Namer provides consistent names for objects in each test.
+type Namer struct {
+	suffix string
+}
+
+func NewNamer(suffix string) *Namer {
+	return &Namer{suffix: suffix}
+}
+
+func (n *Namer) Exchange() string {
+	return "test-exchange-" + n.suffix
+}
+
+func (n *Namer) Topic() string {
+	return "test.queue-" + n.suffix
+}
+
+func (n *Namer) Queue() string {
+	return "requeue-test-" + n.suffix
+}
+
+func RabbitDo(
+	cfg rabbitevents.RabbitConfig,
+	fn func(conn *amqp.Channel),
+) error {
+	GinkgoHelper()
+	conn, err := amqp.Dial(
+		fmt.Sprintf(
+			"amqp://%s:%s@%s/",
+			cfg.GetUserName(),
+			cfg.GetPassword(),
+			cfg.GetHost(),
+		),
+	)
+	if err != nil {
+		return errors.Wrap(err, "rabbit: RabbitDo: Dial Failed")
+	}
+
+	ch, err := conn.Channel()
+	if err != nil {
+		_ = conn.Close()
+		return errors.Wrap(err, "rabbit: RabbitDo: Channel Failed")
+	}
+
+	fn(ch)
+	return nil
+}
+
+func GetTestConfig(ctrl *gomock.Controller) rabbitevents.RabbitConfig {
+	GinkgoHelper()
+	mockConfig := NewMockRabbitConfig(ctrl)
+	mockConfig.EXPECT().GetHost().Return("localhost:5672").MinTimes(2)
+	mockConfig.EXPECT().GetUserName().Return("guest").MinTimes(2)
+	mockConfig.EXPECT().GetPassword().Return("guest").MinTimes(2)
+	mockConfig.EXPECT().GetConnectTimeout().Return(time.Second * 5).AnyTimes()
+	return mockConfig
+}
+
+func DeleteExchanges(cfg rabbitevents.RabbitConfig, exchanges ...string) {
+	Expect(RabbitDo(cfg, func(ch *amqp.Channel) {
+		for _, exchange := range exchanges {
+			Expect(ch.ExchangeDelete(exchange, false, false)).To(Succeed())
+			Expect(ch.ExchangeDelete(exchange+"-retry", false, false)).To(Succeed())
+		}
+	})).To(Succeed())
+}
+
+func DeleteQueues(cfg rabbitevents.RabbitConfig, queues ...string) {
+	Expect(RabbitDo(cfg, func(ch *amqp.Channel) {
+		for _, queue := range queues {
+			_, err := ch.QueueDelete(queue, false, false, true)
+			Expect(err).ToNot(HaveOccurred())
+		}
+	})).To(Succeed())
+}

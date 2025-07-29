@@ -10,7 +10,6 @@ import (
 )
 
 var _ = Describe("RabbitEvents", func() {
-
 	Describe("Change/SubscribeUnfiltered", func() {
 		It("Should get a message sent", func() {
 			eo := &eventObserver{}
@@ -34,7 +33,6 @@ var _ = Describe("RabbitEvents", func() {
 			Expect(err).To(BeNil())
 
 			Expect(lastEvent).To(Equal(event))
-
 		})
 
 		It("Should handle concurrency", func() {
@@ -83,9 +81,7 @@ var _ = Describe("RabbitEvents", func() {
 			wg.Wait()
 
 			Expect(events).To(HaveLen(10))
-
 		})
-
 	})
 
 	Describe("Change/Subscribe", func() {
@@ -111,7 +107,6 @@ var _ = Describe("RabbitEvents", func() {
 			Expect(err).To(BeNil())
 
 			Expect(lastEvent).To(Equal(event))
-
 		})
 
 		It("Should handle concurrency", func() {
@@ -181,8 +176,6 @@ var _ = Describe("RabbitEvents", func() {
 			wg.Wait()
 
 			Expect(events).To(HaveLen(10))
-
 		})
-
 	})
 })

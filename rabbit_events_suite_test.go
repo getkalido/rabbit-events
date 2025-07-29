@@ -4,7 +4,7 @@ import (
 	"log/slog"
 	"testing"
 
-	rabbitEvents "github.com/getkalido/rabbit-events"
+	rabbitevents "github.com/getkalido/rabbit-events"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	slogformatter "github.com/samber/slog-formatter"
@@ -16,9 +16,9 @@ func TestRabbitEvents(t *testing.T) {
 }
 
 var _ = BeforeSuite(func() {
-	oldLogger := rabbitEvents.DefaultLogger()
+	oldLogger := rabbitevents.DefaultLogger()
 
-	rabbitEvents.SetDefaultLogger(
+	rabbitevents.SetDefaultLogger(
 		slog.New(
 			slogformatter.NewFormatterHandler(
 				slogformatter.ErrorFormatter("reason"),
@@ -33,6 +33,6 @@ var _ = BeforeSuite(func() {
 		),
 	)
 	DeferCleanup(func() {
-		rabbitEvents.SetDefaultLogger(oldLogger)
+		rabbitevents.SetDefaultLogger(oldLogger)
 	})
 })

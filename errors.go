@@ -25,7 +25,7 @@ func (e *EventProcessingError) Temporary() bool {
 }
 
 func IsTemporaryError(err error) bool {
-	//If the eror was created by status.Errorf, then use that code.
+	// If the error was created by status.Errorf, then use that code.
 	if err, ok := err.(interface {
 		Temporary() bool
 	}); ok {
