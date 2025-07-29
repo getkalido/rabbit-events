@@ -14,6 +14,8 @@ import (
 	amqp "github.com/rabbitmq/amqp091-go"
 )
 
+var ErrStop = stderrors.New("stopped")
+
 const (
 	maxRequeueNo            = 3
 	requeueHeaderKey        = "requeue-no"
@@ -473,7 +475,7 @@ func (re *RabbitExchangeImpl) Receive(
 		return nil, nil, err
 	}
 
-	queueCtx, queueCancel := context.WithCancel(re.ctx)
+	queueCtx, queueCancel := context.WithCancelCause(re.ctx)
 	logger := re.log()
 	stop := make(chan struct{})
 	return func(handler MessageHandleFunc) error {
@@ -482,7 +484,7 @@ func (re *RabbitExchangeImpl) Receive(
 			for {
 				select {
 				case <-queueCtx.Done():
-					return nil
+					return context.Cause(queueCtx)
 				default:
 				}
 				// If the `msgs` channel is no longer valid, then we need to open a new one
@@ -501,7 +503,7 @@ func (re *RabbitExchangeImpl) Receive(
 
 				select {
 				case <-queueCtx.Done():
-					return queueCtx.Err()
+					return context.Cause(queueCtx)
 				case m, ok := <-msgs:
 					// if the channel is closed, we want to stop receiving on this one, and we need to open a new one
 					if !ok {
@@ -516,6 +518,16 @@ func (re *RabbitExchangeImpl) Receive(
 							if stderrors.Is(err, context.Canceled) {
 								logger.Error(
 									"Context cancelled handling rabbit message",
+									slog.String("exchange", exchange.Name),
+									slog.String("queue", queue.Name),
+									slog.String("body", string(m.Body)),
+									slog.Any("reason", err),
+								)
+								return
+							}
+							if stderrors.Is(err, ErrStop) {
+								logger.Error(
+									"Stop requested",
 									slog.String("exchange", exchange.Name),
 									slog.String("queue", queue.Name),
 									slog.String("body", string(m.Body)),
@@ -596,7 +608,7 @@ func (re *RabbitExchangeImpl) Receive(
 		},
 		func() {
 			if queueCancel != nil {
-				queueCancel()
+				queueCancel(ErrStop)
 				<-stop
 			}
 		}, nil
@@ -619,7 +631,7 @@ func (re *RabbitExchangeImpl) BulkReceive(
 		batchSize = queue.Prefetch
 	}
 
-	queueCtx, queueCancel := context.WithCancel(re.ctx)
+	queueCtx, queueCancel := context.WithCancelCause(re.ctx)
 	logger := re.log()
 	stop := make(chan struct{})
 	return func(handler BulkMessageHandleFunc) error {
@@ -696,7 +708,7 @@ func (re *RabbitExchangeImpl) BulkReceive(
 			for {
 				select {
 				case <-queueCtx.Done():
-					return queueCtx.Err()
+					return context.Cause(queueCtx)
 				default:
 				}
 				// If the `msgs` channel is no longer valid, then we need to open a new one
@@ -717,11 +729,11 @@ func (re *RabbitExchangeImpl) BulkReceive(
 				}
 				select {
 				case <-queueCtx.Done():
-					return queueCtx.Err()
+					return context.Cause(queueCtx)
 				case m, ok := <-msgs:
 					select {
 					case <-queueCtx.Done():
-						return queueCtx.Err()
+						return context.Cause(queueCtx)
 					default:
 					}
 
@@ -778,7 +790,7 @@ func (re *RabbitExchangeImpl) BulkReceive(
 		},
 		func() {
 			if queueCancel != nil {
-				queueCancel()
+				queueCancel(ErrStop)
 				<-stop
 			}
 		}, nil

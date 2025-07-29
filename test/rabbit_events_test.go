@@ -145,6 +145,43 @@ var _ = Describe("RabbitEvents", func() {
 	})
 
 	Describe("Exchange ReceiveFrom", func() {
+		It("Returns a StopErr if stopped", NodeTimeout(1*time.Second), func(ctx context.Context) {
+			ctrl := gomock.NewController(GinkgoT())
+			DeferCleanup(ctrl.Finish)
+			mockConfig := GetTestConfig(ctrl)
+			exchange := NewRabbitExchange(
+				mockConfig,
+				WithRetryAutoDelete(),
+				WithContext(ctx),
+			)
+
+			namer := NewNamer("proc-err")
+			DeferCleanup(func() {
+				DeleteExchanges(mockConfig, namer.Exchange())
+			})
+			handler, closeHandler, err := exchange.ReceiveFrom(
+				namer.Exchange(),
+				ExchangeTypeTopic,
+				false,
+				true,
+				namer.Topic(),
+				namer.Queue(),
+			)
+			Expect(err).To(BeNil())
+			defer closeHandler()
+			replies := make(chan struct{})
+			doOnce := make(chan struct{}, 1)
+			go func() {
+				defer GinkgoRecover()
+				Expect(handler(func(ctx context.Context, message []byte) (err error) {
+					replies <- struct{}{}
+					doOnce <- struct{}{}
+					return NewEventProcessingError(errors.New("Whaaaaaa"))
+				})).To(MatchError(rabbitevents.ErrStop))
+			}()
+			closeHandler()
+		})
+
 		It("Should requeue the message once within a 10 seconds window if a processing error is encountered", NodeTimeout(20*time.Second), func(ctx context.Context) {
 			ctrl := gomock.NewController(GinkgoT())
 			DeferCleanup(ctrl.Finish)
@@ -177,7 +214,7 @@ var _ = Describe("RabbitEvents", func() {
 					replies <- struct{}{}
 					doOnce <- struct{}{}
 					return NewEventProcessingError(errors.New("Whaaaaaa"))
-				})).To(MatchError(context.Canceled))
+				})).To(MatchError(rabbitevents.ErrStop))
 			}()
 
 			sendFn := exchange.SendTo(namer.Exchange(), ExchangeTypeTopic, false, true, namer.Topic())
@@ -231,7 +268,7 @@ var _ = Describe("RabbitEvents", func() {
 					replies <- struct{}{}
 					doOnce <- struct{}{}
 					return NewTestError(errors.New("This should result in a requeueing as well"))
-				})).To(MatchError(context.Canceled))
+				})).To(MatchError(rabbitevents.ErrStop))
 			}()
 
 			sendFn := exchange.SendTo(namer.Exchange(), ExchangeTypeTopic, false, true, namer.Topic())
@@ -291,7 +328,7 @@ var _ = Describe("RabbitEvents", func() {
 						return ctx.Err()
 					}
 					return errors.Wrap(testErr, "failing test")
-				})).To(MatchError(context.Canceled))
+				})).To(MatchError(rabbitevents.ErrStop))
 			}()
 
 			sendFn := exchange.SendTo(namer.Exchange(), ExchangeTypeTopic, false, true, namer.Topic())
@@ -351,7 +388,7 @@ var _ = Describe("RabbitEvents", func() {
 					Expect(messages).To(HaveLen(2))
 					handlerCalled <- struct{}{}
 					return nil
-				})).To(MatchError(context.Canceled))
+				})).To(MatchError(rabbitevents.ErrStop))
 			}()
 
 			sendFn := exchange.SendTo(namer.Exchange(), ExchangeTypeTopic, false, true, namer.Topic())
@@ -407,7 +444,7 @@ var _ = Describe("RabbitEvents", func() {
 					Expect(len(messages)).To(BeNumerically("<=", 2))
 					handlerCalled <- struct{}{}
 					return nil
-				})).To(MatchError(context.Canceled))
+				})).To(MatchError(rabbitevents.ErrStop))
 			}()
 
 			sendFn := exchange.SendTo(namer.Exchange(), ExchangeTypeTopic, false, true, namer.Topic())
@@ -475,7 +512,7 @@ var _ = Describe("RabbitEvents", func() {
 						NewMessageError(messages[0], NewEventProcessingError(errors.New("Whaaaaaa"))),
 						NewMessageError(messages[1], errors.New("Nooo")),
 					}
-				})).To(MatchError(context.Canceled))
+				})).To(MatchError(rabbitevents.ErrStop))
 			}()
 
 			sendFn := exchange.SendTo(namer.Exchange(), ExchangeTypeTopic, false, true, namer.Topic())
