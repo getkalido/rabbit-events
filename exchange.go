@@ -2,6 +2,7 @@ package rabbitevents
 
 import (
 	"context"
+	stderrors "errors"
 	"fmt"
 	"log/slog"
 	"math"
@@ -36,6 +37,7 @@ type RabbitExchange interface {
 var _ RabbitExchange = (*RabbitExchangeImpl)(nil)
 
 type RabbitExchangeImpl struct {
+	ctx                     context.Context
 	rabbitIni               RabbitConfig
 	rabbitEmitConnection    *connectionManager
 	rabbitConsumeConnection *connectionManager
@@ -60,6 +62,7 @@ func NewRabbitExchange(rabbitIni RabbitConfig, opts ...rabbitExchangeOpt) *Rabbi
 		rabbitConnectionConnectTimeout: make(chan int, 1),
 	}
 	re := &RabbitExchangeImpl{
+		ctx:                     context.Background(),
 		rabbitIni:               rabbitIni,
 		rabbitEmitConnection:    rabbitEmitConnection,
 		rabbitConsumeConnection: rabbitConsumeConnection,
@@ -76,6 +79,12 @@ func NewRabbitExchange(rabbitIni RabbitConfig, opts ...rabbitExchangeOpt) *Rabbi
 }
 
 type rabbitExchangeOpt func(*RabbitExchangeImpl)
+
+func WithContext(ctx context.Context) rabbitExchangeOpt {
+	return func(e *RabbitExchangeImpl) {
+		e.ctx = ctx
+	}
+}
 
 func WithLogger(logger *slog.Logger) rabbitExchangeOpt {
 	return func(e *RabbitExchangeImpl) {
@@ -464,11 +473,18 @@ func (re *RabbitExchangeImpl) Receive(
 		return nil, nil, err
 	}
 
+	queueCtx, queueCancel := context.WithCancel(re.ctx)
 	logger := re.log()
 	stop := make(chan struct{})
 	return func(handler MessageHandleFunc) error {
+			defer close(stop)
 			defer closer()
 			for {
+				select {
+				case <-queueCtx.Done():
+					return nil
+				default:
+				}
 				// If the `msgs` channel is no longer valid, then we need to open a new one
 				// If that attempt fails, the channel will remain invalid, so we will try again, until we succeed
 				if msgs == nil {
@@ -484,6 +500,8 @@ func (re *RabbitExchangeImpl) Receive(
 				}
 
 				select {
+				case <-queueCtx.Done():
+					return queueCtx.Err()
 				case m, ok := <-msgs:
 					// if the channel is closed, we want to stop receiving on this one, and we need to open a new one
 					if !ok {
@@ -491,10 +509,20 @@ func (re *RabbitExchangeImpl) Receive(
 						continue
 					}
 					go func(m amqp.Delivery) {
-						ctx, cancel := context.WithCancel(context.Background())
+						ctx, cancel := context.WithCancel(queueCtx)
 						defer cancel()
 						err := handler(ctx, m.Body)
 						if err != nil {
+							if stderrors.Is(err, context.Canceled) {
+								logger.Error(
+									"Context cancelled handling rabbit message",
+									slog.String("exchange", exchange.Name),
+									slog.String("queue", queue.Name),
+									slog.String("body", string(m.Body)),
+									slog.Any("reason", err),
+								)
+								return
+							}
 							logger.Error(
 								"Error handling rabbit message",
 								slog.String("exchange", exchange.Name),
@@ -538,9 +566,6 @@ func (re *RabbitExchangeImpl) Receive(
 						}
 					}(m)
 
-				case <-stop:
-					return nil
-
 				case e := <-errChan:
 					// Something went wrong
 					if e == nil {
@@ -570,7 +595,10 @@ func (re *RabbitExchangeImpl) Receive(
 			}
 		},
 		func() {
-			close(stop)
+			if queueCancel != nil {
+				queueCancel()
+				<-stop
+			}
 		}, nil
 }
 
@@ -591,18 +619,25 @@ func (re *RabbitExchangeImpl) BulkReceive(
 		batchSize = queue.Prefetch
 	}
 
+	queueCtx, queueCancel := context.WithCancel(re.ctx)
 	logger := re.log()
 	stop := make(chan struct{})
 	return func(handler BulkMessageHandleFunc) error {
+			defer close(stop)
 			defer closer()
 			batch := make([]amqp.Delivery, 0, batchSize)
 			// TODO: Inject the NewTimer function into the service to enable us to mock it during testing.
 			fillWaitTimer := time.NewTimer(maxWait)
 			handleMessages := func(messages []amqp.Delivery) {
+				select {
+				case <-queueCtx.Done():
+					return
+				default:
+				}
 				if len(messages) == 0 {
 					return
 				}
-				ctx, cancel := context.WithCancel(context.Background())
+				ctx, cancel := context.WithCancel(queueCtx)
 				defer cancel()
 				errors := handler(ctx, messages)
 				erroredMessages := make(map[uint64]struct{})
@@ -659,6 +694,11 @@ func (re *RabbitExchangeImpl) BulkReceive(
 				}
 			}
 			for {
+				select {
+				case <-queueCtx.Done():
+					return queueCtx.Err()
+				default:
+				}
 				// If the `msgs` channel is no longer valid, then we need to open a new one
 				// If that attempt fails, the channel will remain invalid, so we will try again, until we succeed
 				if msgs == nil {
@@ -676,7 +716,15 @@ func (re *RabbitExchangeImpl) BulkReceive(
 					continue
 				}
 				select {
+				case <-queueCtx.Done():
+					return queueCtx.Err()
 				case m, ok := <-msgs:
+					select {
+					case <-queueCtx.Done():
+						return queueCtx.Err()
+					default:
+					}
+
 					// if the channel is closed, we want to stop receiving on this one, and we need to open a new one
 					if !ok {
 						msgs = nil
@@ -729,7 +777,10 @@ func (re *RabbitExchangeImpl) BulkReceive(
 			}
 		},
 		func() {
-			close(stop)
+			if queueCancel != nil {
+				queueCancel()
+				<-stop
+			}
 		}, nil
 }
 
