@@ -2,35 +2,20 @@ package test
 
 import (
 	"context"
-	"errors"
+	"log/slog"
 	"sync"
 	"time"
 
 	. "github.com/getkalido/rabbit-events"
-	gomock "github.com/golang/mock/gomock"
+	rabbitevents "github.com/getkalido/rabbit-events"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"github.com/pkg/errors"
 	amqp "github.com/rabbitmq/amqp091-go"
+	"go.uber.org/mock/gomock"
 )
 
-type TestError struct {
-	err error
-}
-
-func NewTestError(err error) error {
-	return &TestError{err}
-}
-
-func (e *TestError) Error() string {
-	return e.err.Error()
-}
-
-func (e *TestError) Temporary() bool {
-	return true
-}
-
 var _ = Describe("RabbitEvents", func() {
-
 	Describe("RabbitBatcher", func() {
 		It("Should send messages after quiescence", func() {
 			messagesSent := make([]string, 0)
@@ -116,35 +101,34 @@ var _ = Describe("RabbitEvents", func() {
 			defer l.Unlock()
 			Expect(messagesSent).To(HaveLen(15))
 		})
-
 	})
 
 	Describe("Event Publisher", func() {
-		It("Should cancel publishing midway if context is timed out", func() {
+		It("Should cancel publishing midway if context is timed out", func(ctx context.Context) {
 			exchange := NewRabbitExchange(&RabbitIni{})
 			eventHandler := NewRabbitEventHandler(exchange, "", 0)
 			emitter := eventHandler.Emit("test")
-			ctx, cancel := context.WithTimeout(context.Background(), -time.Nanosecond)
+			ctx, cancel := context.WithTimeout(ctx, -time.Nanosecond)
 			defer cancel()
 			err := emitter(ctx, Create, nil, 54, nil, nil)
 			Expect(err).ToNot(BeNil())
 			Expect(err).To(Equal(context.DeadlineExceeded))
 		})
 
-		It("Should cancel publishing midway if context is cancelled", func() {
+		It("Should cancel publishing midway if context is cancelled", func(ctx context.Context) {
 			exchange := NewRabbitExchange(&RabbitIni{})
 			eventHandler := NewRabbitEventHandler(exchange, "", 0)
 			emitter := eventHandler.Emit("test")
-			ctx, cancel := context.WithCancel(context.Background())
+			ctx, cancel := context.WithCancel(ctx)
 			cancel()
 			err := emitter(ctx, Create, nil, 54, nil, nil)
 			Expect(err).ToNot(BeNil())
 			Expect(err).To(Equal(context.Canceled))
 		})
 
-		It("Should not cancel publishing midway if context is not cancelled", func() {
+		It("Should not cancel publishing midway if context is not cancelled", func(ctx context.Context) {
 			ctrl := gomock.NewController(GinkgoT())
-			defer ctrl.Finish()
+			DeferCleanup(ctrl.Finish)
 			exchange := NewMockRabbitExchange(ctrl)
 			exchangeRunner := func(ctx context.Context, data []byte) error {
 				Expect(ctx.Err()).To(BeNil())
@@ -153,7 +137,7 @@ var _ = Describe("RabbitEvents", func() {
 			exchange.EXPECT().SendTo("test-exchange", ExchangeTypeTopic, true, false, "test").Return(exchangeRunner)
 			eventHandler := NewRabbitEventHandler(exchange, "test-exchange", 0)
 			emitter := eventHandler.Emit("test")
-			ctx, cancel := context.WithTimeout(context.Background(), time.Hour)
+			ctx, cancel := context.WithTimeout(ctx, time.Hour)
 			defer cancel()
 			err := emitter(ctx, Create, nil, 54, nil, nil)
 			Expect(err).To(BeNil())
@@ -161,87 +145,80 @@ var _ = Describe("RabbitEvents", func() {
 	})
 
 	Describe("Exchange ReceiveFrom", func() {
-		It("Should requeue the message once within a 10 seconds window if a processing error is encountered", func() {
+		It("Returns a StopErr if stopped", NodeTimeout(1*time.Second), func(ctx context.Context) {
 			ctrl := gomock.NewController(GinkgoT())
-			defer ctrl.Finish()
-			mockConfig := NewMockRabbitConfig(ctrl)
-			mockConfig.EXPECT().GetHost().Return("localhost:5672").Times(2)
-			mockConfig.EXPECT().GetUserName().Return("guest").Times(2)
-			mockConfig.EXPECT().GetPassword().Return("guest").Times(2)
-			mockConfig.EXPECT().GetConnectTimeout().Return(time.Second * 5).AnyTimes()
-			exchange := NewRabbitExchange(mockConfig)
+			DeferCleanup(ctrl.Finish)
+			mockConfig := GetTestConfig(ctrl)
+			exchange := NewRabbitExchange(
+				mockConfig,
+				WithRetryAutoDelete(),
+				WithContext(ctx),
+			)
 
+			namer := NewNamer("proc-err")
+			DeferCleanup(func() {
+				DeleteExchanges(mockConfig, namer.Exchange())
+			})
 			handler, closeHandler, err := exchange.ReceiveFrom(
-				"test-exchange",
+				namer.Exchange(),
 				ExchangeTypeTopic,
 				false,
 				true,
-				"test.queue",
-				"requeue-test",
+				namer.Topic(),
+				namer.Queue(),
 			)
 			Expect(err).To(BeNil())
 			defer closeHandler()
 			replies := make(chan struct{})
 			doOnce := make(chan struct{}, 1)
 			go func() {
-				handler(func(ctx context.Context, message []byte) (err error) {
+				defer GinkgoRecover()
+				Expect(handler(func(ctx context.Context, message []byte) (err error) {
 					replies <- struct{}{}
 					doOnce <- struct{}{}
 					return NewEventProcessingError(errors.New("Whaaaaaa"))
-				})
+				})).To(MatchError(rabbitevents.ErrStop))
 			}()
-
-			sendFn := exchange.SendTo("test-exchange", ExchangeTypeTopic, false, true, "test.queue")
-			sendFn(context.Background(), []byte{})
-			noReplies := 0
-			timer := time.NewTimer(13 * time.Second)
-		recvLoop:
-			for {
-				select {
-				case <-replies:
-					noReplies++
-					if noReplies == 2 {
-						break recvLoop
-					}
-				case <-timer.C:
-					break recvLoop
-				}
-			}
-			Expect(noReplies).To(Equal(2))
+			closeHandler()
 		})
-		It("Should requeue the message once within a 10 seconds window if another type of temporary error is enountered", func() {
 
+		It("Should requeue the message once within a 10 seconds window if a processing error is encountered", NodeTimeout(20*time.Second), func(ctx context.Context) {
 			ctrl := gomock.NewController(GinkgoT())
-			defer ctrl.Finish()
-			mockConfig := NewMockRabbitConfig(ctrl)
-			mockConfig.EXPECT().GetHost().Return("localhost:5672").Times(2)
-			mockConfig.EXPECT().GetUserName().Return("guest").Times(2)
-			mockConfig.EXPECT().GetPassword().Return("guest").Times(2)
-			mockConfig.EXPECT().GetConnectTimeout().Return(time.Second * 5).AnyTimes()
-			exchange := NewRabbitExchange(mockConfig)
+			DeferCleanup(ctrl.Finish)
+			mockConfig := GetTestConfig(ctrl)
+			exchange := NewRabbitExchange(
+				mockConfig,
+				WithRetryAutoDelete(),
+				WithContext(ctx),
+			)
 
+			namer := NewNamer("proc-err")
+			DeferCleanup(func() {
+				DeleteExchanges(mockConfig, namer.Exchange())
+			})
 			handler, closeHandler, err := exchange.ReceiveFrom(
-				"test-exchange",
+				namer.Exchange(),
 				ExchangeTypeTopic,
 				false,
 				true,
-				"test.queue",
-				"requeue-test",
+				namer.Topic(),
+				namer.Queue(),
 			)
 			Expect(err).To(BeNil())
 			defer closeHandler()
 			replies := make(chan struct{})
 			doOnce := make(chan struct{}, 1)
 			go func() {
-				handler(func(ctx context.Context, message []byte) (err error) {
+				defer GinkgoRecover()
+				Expect(handler(func(ctx context.Context, message []byte) (err error) {
 					replies <- struct{}{}
 					doOnce <- struct{}{}
-					return NewTestError(errors.New("This should result in a requeueing as well"))
-				})
+					return NewEventProcessingError(errors.New("Whaaaaaa"))
+				})).To(MatchError(rabbitevents.ErrStop))
 			}()
 
-			sendFn := exchange.SendTo("test-exchange", ExchangeTypeTopic, false, true, "test.queue")
-			sendFn(context.Background(), []byte{})
+			sendFn := exchange.SendTo(namer.Exchange(), ExchangeTypeTopic, false, true, namer.Topic())
+			Expect(sendFn(ctx, []byte{})).To(Succeed())
 			noReplies := 0
 			timer := time.NewTimer(13 * time.Second)
 		recvLoop:
@@ -258,36 +235,44 @@ var _ = Describe("RabbitEvents", func() {
 			}
 			Expect(noReplies).To(Equal(2))
 		})
-		It("Should not reuqueue the message if an error that is not temporary is encountered", func() {
-			ctrl := gomock.NewController(GinkgoT())
-			defer ctrl.Finish()
-			mockConfig := NewMockRabbitConfig(ctrl)
-			mockConfig.EXPECT().GetHost().Return("localhost:5672").Times(2)
-			mockConfig.EXPECT().GetUserName().Return("guest").Times(2)
-			mockConfig.EXPECT().GetPassword().Return("guest").Times(2)
-			mockConfig.EXPECT().GetConnectTimeout().Return(time.Second * 5).AnyTimes()
-			exchange := NewRabbitExchange(mockConfig)
 
+		It("Should requeue the message once within a 10 seconds window if another type of temporary error is encountered", NodeTimeout(20*time.Second), func(ctx context.Context) {
+			ctrl := gomock.NewController(GinkgoT())
+			DeferCleanup(ctrl.Finish)
+			mockConfig := GetTestConfig(ctrl)
+			exchange := NewRabbitExchange(
+				mockConfig,
+				WithRetryAutoDelete(),
+				WithContext(ctx),
+			)
+
+			namer := NewNamer("temp-err")
+			DeferCleanup(func() {
+				DeleteExchanges(mockConfig, namer.Exchange())
+			})
 			handler, closeHandler, err := exchange.ReceiveFrom(
-				"test-exchange",
+				namer.Exchange(),
 				ExchangeTypeTopic,
 				false,
 				true,
-				"test.queue",
-				"requeue-test",
+				namer.Topic(),
+				namer.Queue(),
 			)
 			Expect(err).To(BeNil())
 			defer closeHandler()
 			replies := make(chan struct{})
+			doOnce := make(chan struct{}, 1)
 			go func() {
-				handler(func(ctx context.Context, message []byte) (err error) {
+				defer GinkgoRecover()
+				Expect(handler(func(ctx context.Context, message []byte) (err error) {
 					replies <- struct{}{}
-					return errors.New("Whaaaa!")
-				})
+					doOnce <- struct{}{}
+					return NewTestError(errors.New("This should result in a requeueing as well"))
+				})).To(MatchError(rabbitevents.ErrStop))
 			}()
 
-			sendFn := exchange.SendTo("test-exchange", ExchangeTypeTopic, false, true, "test.queue")
-			sendFn(context.Background(), []byte{})
+			sendFn := exchange.SendTo(namer.Exchange(), ExchangeTypeTopic, false, true, namer.Topic())
+			Expect(sendFn(ctx, []byte{})).To(Succeed())
 			noReplies := 0
 			timer := time.NewTimer(13 * time.Second)
 		recvLoop:
@@ -299,6 +284,68 @@ var _ = Describe("RabbitEvents", func() {
 						break recvLoop
 					}
 				case <-timer.C:
+					break recvLoop
+				}
+			}
+			Expect(noReplies).To(Equal(2))
+		})
+
+		It("Should not reuqueue the message if an error that is not temporary is encountered", NodeTimeout(20*time.Second), func(ctx context.Context) {
+			logger := rabbitevents.DefaultLogger()
+			logger.Debug("Starting test")
+			ctrl := gomock.NewController(GinkgoT())
+			DeferCleanup(ctrl.Finish)
+			mockConfig := GetTestConfig(ctrl)
+			exchange := NewRabbitExchange(
+				mockConfig,
+				WithRetryAutoDelete(),
+				WithContext(ctx),
+			)
+
+			namer := NewNamer("misc-err")
+			DeferCleanup(func() {
+				DeleteExchanges(mockConfig, namer.Exchange())
+			})
+			handler, closeHandler, err := exchange.ReceiveFrom(
+				namer.Exchange(),
+				ExchangeTypeTopic,
+				false,
+				true,
+				namer.Topic(),
+				namer.Queue(),
+			)
+			Expect(err).To(BeNil())
+			defer closeHandler()
+			replies := make(chan struct{})
+			testErr := errors.New("Whaaaa!")
+			go func() {
+				defer GinkgoRecover()
+				Expect(handler(func(ctx context.Context, message []byte) (err error) {
+					logger.Debug("Entering handler")
+					select {
+					case replies <- struct{}{}:
+					case <-ctx.Done():
+						return ctx.Err()
+					}
+					return errors.Wrap(testErr, "failing test")
+				})).To(MatchError(rabbitevents.ErrStop))
+			}()
+
+			sendFn := exchange.SendTo(namer.Exchange(), ExchangeTypeTopic, false, true, namer.Topic())
+			Expect(sendFn(ctx, []byte{})).To(Succeed())
+			noReplies := 0
+			timer := time.NewTimer(13 * time.Second)
+		recvLoop:
+			for {
+				select {
+				case <-replies:
+					noReplies++
+					logger.Debug("Received reply", slog.Int("noReplies", noReplies))
+					if noReplies == 2 {
+						break recvLoop
+					}
+				case <-timer.C:
+					logger.Debug("Timed out", slog.Int("noReplies", noReplies))
 					break recvLoop
 				}
 			}
@@ -306,23 +353,27 @@ var _ = Describe("RabbitEvents", func() {
 		})
 	})
 	Describe("Exchange BulkReceiveFrom", func() {
-		It("Should receive messages in bulk", func() {
+		It("Should receive messages in bulk", NodeTimeout(5*time.Second), func(ctx context.Context) {
 			ctrl := gomock.NewController(GinkgoT())
-			defer ctrl.Finish()
-			mockConfig := NewMockRabbitConfig(ctrl)
-			mockConfig.EXPECT().GetHost().Return("localhost:5672").Times(2)
-			mockConfig.EXPECT().GetUserName().Return("guest").Times(2)
-			mockConfig.EXPECT().GetPassword().Return("guest").Times(2)
-			mockConfig.EXPECT().GetConnectTimeout().Return(time.Second * 5).AnyTimes()
-			exchange := NewRabbitExchange(mockConfig)
+			DeferCleanup(ctrl.Finish)
+			mockConfig := GetTestConfig(ctrl)
+			exchange := NewRabbitExchange(
+				mockConfig,
+				WithRetryAutoDelete(),
+				WithContext(ctx),
+			)
 
+			namer := NewNamer("receive-bulk")
+			DeferCleanup(func() {
+				DeleteExchanges(mockConfig, namer.Exchange())
+			})
 			handler, closeHandler, err := exchange.BulkReceiveFrom(
-				"test-exchange",
+				namer.Exchange(),
 				ExchangeTypeTopic,
 				false,
 				true,
-				"test.queue",
-				"requeue-test",
+				namer.Topic(),
+				namer.Queue(),
 				11,
 				1000*time.Millisecond,
 				2,
@@ -332,16 +383,17 @@ var _ = Describe("RabbitEvents", func() {
 			Expect(err).To(BeNil())
 			defer closeHandler()
 			go func() {
-				handler(func(ctx context.Context, messages []amqp.Delivery) []*MessageError {
-					Expect(len(messages)).To(Equal(2))
+				defer GinkgoRecover()
+				Expect(handler(func(ctx context.Context, messages []amqp.Delivery) []*MessageError {
+					Expect(messages).To(HaveLen(2))
 					handlerCalled <- struct{}{}
 					return nil
-				})
+				})).To(MatchError(rabbitevents.ErrStop))
 			}()
 
-			sendFn := exchange.SendTo("test-exchange", ExchangeTypeTopic, false, true, "test.queue")
-			sendFn(context.Background(), []byte{})
-			sendFn(context.Background(), []byte{})
+			sendFn := exchange.SendTo(namer.Exchange(), ExchangeTypeTopic, false, true, namer.Topic())
+			Expect(sendFn(ctx, []byte{})).To(Succeed())
+			Expect(sendFn(ctx, []byte{})).To(Succeed())
 			timer := time.NewTimer(3 * time.Second)
 		recvLoop:
 			for {
@@ -357,23 +409,27 @@ var _ = Describe("RabbitEvents", func() {
 			}
 			Expect(noReplies).To(Equal(1))
 		})
-		It("Should receive 2 messages even if the prefetch is 3 if it takes more than maxWait to get 3 messages", func() {
+		It("Should receive 2 messages even if the prefetch is 3 if it takes more than maxWait to get 3 messages", NodeTimeout(5*time.Second), func(ctx context.Context) {
 			ctrl := gomock.NewController(GinkgoT())
-			defer ctrl.Finish()
-			mockConfig := NewMockRabbitConfig(ctrl)
-			mockConfig.EXPECT().GetHost().Return("localhost:5672").Times(2)
-			mockConfig.EXPECT().GetUserName().Return("guest").Times(2)
-			mockConfig.EXPECT().GetPassword().Return("guest").Times(2)
-			mockConfig.EXPECT().GetConnectTimeout().Return(time.Second * 5).AnyTimes()
-			exchange := NewRabbitExchange(mockConfig)
+			DeferCleanup(ctrl.Finish)
+			mockConfig := GetTestConfig(ctrl)
+			exchange := NewRabbitExchange(
+				mockConfig,
+				WithRetryAutoDelete(),
+				WithContext(ctx),
+			)
 
+			namer := NewNamer("receive-bulk-max-wait")
+			DeferCleanup(func() {
+				DeleteExchanges(mockConfig, namer.Exchange())
+			})
 			handler, closeHandler, err := exchange.BulkReceiveFrom(
-				"test-exchange",
+				namer.Exchange(),
 				ExchangeTypeTopic,
 				false,
 				true,
-				"test.queue",
-				"requeue-test",
+				namer.Topic(),
+				namer.Queue(),
 				10,
 				100*time.Millisecond,
 				2,
@@ -383,18 +439,19 @@ var _ = Describe("RabbitEvents", func() {
 			handlerCalled := make(chan struct{})
 			noReplies := 0
 			go func() {
-				handler(func(ctx context.Context, messages []amqp.Delivery) []*MessageError {
+				defer GinkgoRecover()
+				Expect(handler(func(ctx context.Context, messages []amqp.Delivery) []*MessageError {
 					Expect(len(messages)).To(BeNumerically("<=", 2))
 					handlerCalled <- struct{}{}
 					return nil
-				})
+				})).To(MatchError(rabbitevents.ErrStop))
 			}()
 
-			sendFn := exchange.SendTo("test-exchange", ExchangeTypeTopic, false, true, "test.queue")
-			sendFn(context.Background(), []byte{})
-			sendFn(context.Background(), []byte{})
+			sendFn := exchange.SendTo(namer.Exchange(), ExchangeTypeTopic, false, true, namer.Topic())
+			Expect(sendFn(ctx, []byte{})).To(Succeed())
+			Expect(sendFn(ctx, []byte{})).To(Succeed())
 			time.Sleep(100 * time.Millisecond)
-			sendFn(context.Background(), []byte{})
+			Expect(sendFn(ctx, []byte{})).To(Succeed())
 			timer := time.NewTimer(3 * time.Second)
 		recvLoop:
 			for {
@@ -410,23 +467,28 @@ var _ = Describe("RabbitEvents", func() {
 			}
 			Expect(noReplies).To(Equal(2))
 		})
-		It("Should only requeue the message that resulted in temporary error", func() {
-			ctrl := gomock.NewController(GinkgoT())
-			defer ctrl.Finish()
-			mockConfig := NewMockRabbitConfig(ctrl)
-			mockConfig.EXPECT().GetHost().Return("localhost:5672").Times(2)
-			mockConfig.EXPECT().GetUserName().Return("guest").Times(2)
-			mockConfig.EXPECT().GetPassword().Return("guest").Times(2)
-			mockConfig.EXPECT().GetConnectTimeout().Return(time.Second * 5).AnyTimes()
-			exchange := NewRabbitExchange(mockConfig)
 
+		It("Should only requeue the message that resulted in temporary error", NodeTimeout(20*time.Second), func(ctx context.Context) {
+			ctrl := gomock.NewController(GinkgoT())
+			DeferCleanup(ctrl.Finish)
+			mockConfig := GetTestConfig(ctrl)
+			exchange := NewRabbitExchange(
+				mockConfig,
+				WithRetryAutoDelete(),
+				WithContext(ctx),
+			)
+
+			namer := NewNamer("receive-bulk-temp-err")
+			DeferCleanup(func() {
+				DeleteExchanges(mockConfig, namer.Exchange())
+			})
 			handler, closeHandler, err := exchange.BulkReceiveFrom(
-				"test-exchange",
+				namer.Exchange(),
 				ExchangeTypeTopic,
 				false,
 				true,
-				"test.queue",
-				"requeue-test",
+				namer.Topic(),
+				namer.Queue(),
 				3,
 				100*time.Millisecond,
 				3,
@@ -436,12 +498,13 @@ var _ = Describe("RabbitEvents", func() {
 			handlerCalled := make(chan struct{})
 			noReplies := 0
 			go func() {
-				handler(func(ctx context.Context, messages []amqp.Delivery) []*MessageError {
+				defer GinkgoRecover()
+				Expect(handler(func(ctx context.Context, messages []amqp.Delivery) []*MessageError {
 					if noReplies == 0 {
-						Expect(len(messages)).To(Equal(3))
+						Expect(messages).To(HaveLen(3))
 						handlerCalled <- struct{}{}
 					} else {
-						Expect(len(messages)).To(Equal(1))
+						Expect(messages).To(HaveLen(1))
 						handlerCalled <- struct{}{}
 						return nil
 					}
@@ -449,13 +512,13 @@ var _ = Describe("RabbitEvents", func() {
 						NewMessageError(messages[0], NewEventProcessingError(errors.New("Whaaaaaa"))),
 						NewMessageError(messages[1], errors.New("Nooo")),
 					}
-				})
+				})).To(MatchError(rabbitevents.ErrStop))
 			}()
 
-			sendFn := exchange.SendTo("test-exchange", ExchangeTypeTopic, false, true, "test.queue")
-			sendFn(context.Background(), []byte{})
-			sendFn(context.Background(), []byte{})
-			sendFn(context.Background(), []byte{})
+			sendFn := exchange.SendTo(namer.Exchange(), ExchangeTypeTopic, false, true, namer.Topic())
+			Expect(sendFn(ctx, []byte{})).To(Succeed())
+			Expect(sendFn(ctx, []byte{})).To(Succeed())
+			Expect(sendFn(ctx, []byte{})).To(Succeed())
 			timer := time.NewTimer(13 * time.Second)
 		recvLoop:
 			for {

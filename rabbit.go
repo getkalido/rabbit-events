@@ -23,8 +23,10 @@ type MessageHandler interface {
 	HandleMessage([]byte) error
 }
 
-type MessageHandleFunc func(context.Context, []byte) error
-type BulkMessageHandleFunc func(context.Context, []amqp.Delivery) []*MessageError
+type (
+	MessageHandleFunc     func(context.Context, []byte) error
+	BulkMessageHandleFunc func(context.Context, []amqp.Delivery) []*MessageError
+)
 
 type RabbitConfig interface {
 	GetUserName() string
@@ -67,14 +69,12 @@ func ProcessDirectMessage(rabbitIni RabbitConfig, exchange, routingKey string, h
 		time.Sleep(time.Millisecond * 250)
 
 		conn, err := amqp.Dial(fmt.Sprintf("amqp://%s:%s@%s/", rabbitIni.GetUserName(), rabbitIni.GetPassword(), rabbitIni.GetHost()))
-
 		if err != nil {
 			DefaultLogger().Error("rabbit:ProcessDirectMessage:Dial Failed", slog.Any("reason", err))
 			continue
 		}
 
 		ch, err := conn.Channel()
-
 		if err != nil {
 			DefaultLogger().Error("rabbit:ProcessDirectMessage:Channel Failed", slog.Any("reason", err))
 			err = conn.Close()
@@ -93,7 +93,6 @@ func ProcessDirectMessage(rabbitIni RabbitConfig, exchange, routingKey string, h
 			false,    // no-wait
 			nil,      // args
 		)
-
 		if err != nil {
 			DefaultLogger().Error("rabbit:ProcessDirectMessage:ExchangeDeclare Failed", slog.Any("reason", err))
 			err = ch.Close()
@@ -115,7 +114,6 @@ func ProcessDirectMessage(rabbitIni RabbitConfig, exchange, routingKey string, h
 			false, // no-wait
 			nil,   // args
 		)
-
 		if err != nil {
 			DefaultLogger().Error("rabbit:ProcessDirectMessage:QueueDeclare Failed", slog.Any("reason", err))
 			err = ch.Close()
@@ -134,9 +132,8 @@ func ProcessDirectMessage(rabbitIni RabbitConfig, exchange, routingKey string, h
 			routingKey, // routing key
 			exchange,   // exchange name
 			false,      // no-wait
-			nil,        //args
+			nil,        // args
 		)
-
 		if err != nil {
 			DefaultLogger().Error("rabbit:ProcessDirectMessage:QueueBind Failed", slog.Any("reason", err))
 			err = ch.Close()
@@ -191,7 +188,6 @@ func ProcessDirectMessage(rabbitIni RabbitConfig, exchange, routingKey string, h
 
 // SendChangeNotificationMessages Sends a bunch of messages on the change notification rabbit channel, without dialing everytime like a noob
 func SendChangeNotificationMessages(ctx context.Context, messages []string, channel string, rabbitIni RabbitConfig) {
-
 	exchange := NewRabbitExchange(rabbitIni)
 
 	defer func() { _ = exchange.Close() }()
@@ -216,16 +212,17 @@ type RabbitBatcher struct {
 	Channel            string
 }
 
-var DefaultQuiescenceTime time.Duration = time.Millisecond * 5
-var DefaultMaxDelay time.Duration = time.Millisecond * 50
-var DefualtMaxMessagesInBatch = 1000
+var (
+	DefaultQuiescenceTime     time.Duration = time.Millisecond * 5
+	DefaultMaxDelay           time.Duration = time.Millisecond * 50
+	DefualtMaxMessagesInBatch               = 1000
+)
 
 func (rb *RabbitBatcher) setup() {
 	rb.q = make(chan string, 1)
 	rb.stop = make(chan struct{})
 	if rb.MaxDelay == 0 {
 		rb.MaxDelay = DefaultMaxDelay
-
 	}
 	if rb.QuiescenceTime == 0 {
 		rb.QuiescenceTime = DefaultQuiescenceTime

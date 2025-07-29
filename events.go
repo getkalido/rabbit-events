@@ -55,7 +55,11 @@ type ImplRabbitEventHandler struct {
 
 const rabbitPrefetchForSingleQueue = 100
 
-func NewRabbitEventHandler(rabbitEx RabbitExchange, exchangeName string, prefetchCount int) RabbitEventHandler {
+func NewRabbitEventHandler(
+	rabbitEx RabbitExchange,
+	exchangeName string,
+	prefetchCount int,
+) RabbitEventHandler {
 	if prefetchCount == 0 {
 		prefetchCount = rabbitPrefetchForSingleQueue + runtime.NumCPU()*2
 	}
@@ -67,8 +71,20 @@ func NewRabbitEventHandler(rabbitEx RabbitExchange, exchangeName string, prefetc
 }
 
 func (rem *ImplRabbitEventHandler) Emit(path string) EventEmitter {
-	messageSender := rem.rabbitEx.SendTo(rem.exchangeName, ExchangeTypeTopic, true, false, path)
-	return func(ctx context.Context, action ActionType, context map[string][]string, id int64, old, state interface{}) error {
+	messageSender := rem.rabbitEx.SendTo(
+		rem.exchangeName,
+		ExchangeTypeTopic,
+		true,
+		false,
+		path,
+	)
+	return func(
+		ctx context.Context,
+		action ActionType,
+		context map[string][]string,
+		id int64,
+		old, state interface{},
+	) error {
 		if ctx == nil {
 			return ErrNilContext
 		}
@@ -90,7 +106,13 @@ func (rem *ImplRabbitEventHandler) Emit(path string) EventEmitter {
 		if numCallers > 1 {
 			frames := runtime.CallersFrames(callers)
 			first, _ := frames.Next()
-			event.Source.Originator += first.File + ":" + fmt.Sprint(first.Line) + " " + first.Function + "\n"
+			event.Source.Originator = fmt.Sprintf(
+				"%s%s:%d %s\n",
+				event.Source.Originator,
+				first.File,
+				first.Line,
+				first.Function,
+			)
 		}
 
 		if ctx.Err() != nil {
@@ -98,7 +120,6 @@ func (rem *ImplRabbitEventHandler) Emit(path string) EventEmitter {
 		}
 
 		data, err := json.Marshal(event)
-
 		if err != nil {
 			return err
 		}
@@ -111,7 +132,10 @@ func (rem *ImplRabbitEventHandler) Emit(path string) EventEmitter {
 	}
 }
 
-func (rem *ImplRabbitEventHandler) Consume(path string, typer ...func() interface{}) (EventConsumer, error) {
+func (rem *ImplRabbitEventHandler) Consume(
+	path string,
+	typer ...func() interface{},
+) (EventConsumer, error) {
 	receive, stop, err := rem.rabbitEx.Receive(ExchangeSettings{
 		Name:         rem.exchangeName,
 		ExchangeType: ExchangeTypeTopic,
@@ -140,7 +164,15 @@ func (rem *ImplRabbitEventHandler) Consume(path string, typer ...func() interfac
 	return eo, nil
 }
 
-func Emit(ctx context.Context, rabbitIni *RabbitIni, path string, action ActionType, context map[string][]string, id int64, old, state interface{}) error {
+func Emit(
+	ctx context.Context,
+	rabbitIni *RabbitIni,
+	path string,
+	action ActionType,
+	context map[string][]string,
+	id int64,
+	old, state interface{},
+) error {
 	if ctx == nil {
 		return ErrNilContext
 	}
@@ -159,12 +191,12 @@ func Emit(ctx context.Context, rabbitIni *RabbitIni, path string, action ActionT
 
 type eventObserver struct {
 	lock sync.RWMutex
-	//EventId -> listenerID -> listener
+	// EventId -> listenerID -> listener
 	listeners            map[int64]map[int64]func(*Event)
 	nextListenerID       int64
 	typer                func() interface{}
 	nextGlobalListenerID int64
-	globalListeners      map[int64]func(*Event) //This is a default listener for all events
+	globalListeners      map[int64]func(*Event) // This is a default listener for all events
 }
 
 func (eo *eventObserver) Change(ctx context.Context, data []byte) error {
@@ -194,7 +226,7 @@ func (eo *eventObserver) Change(ctx context.Context, data []byte) error {
 	defer eo.lock.RUnlock()
 
 	for _, listener := range eo.listeners[e.ID] {
-		//If the listeners do a lot of work ,kicking these off in goroutines might be worth
+		// If the listeners do a lot of work ,kicking these off in goroutines might be worth
 		listener(e)
 	}
 
@@ -205,7 +237,10 @@ func (eo *eventObserver) Change(ctx context.Context, data []byte) error {
 	return nil
 }
 
-func (eo *eventObserver) Subscribe(ids []int64, handler func(*Event)) Unsubscribe {
+func (eo *eventObserver) Subscribe(
+	ids []int64,
+	handler func(*Event),
+) Unsubscribe {
 	eo.lock.Lock()
 	defer eo.lock.Unlock()
 	listenerID := eo.nextListenerID
@@ -228,10 +263,11 @@ func (eo *eventObserver) Subscribe(ids []int64, handler func(*Event)) Unsubscrib
 			delete(eo.listeners[id], listenerID)
 		}
 	}
-
 }
 
-func (eo *eventObserver) SubscribeUnfiltered(handler func(*Event)) Unsubscribe {
+func (eo *eventObserver) SubscribeUnfiltered(
+	handler func(*Event),
+) Unsubscribe {
 	eo.lock.Lock()
 	defer eo.lock.Unlock()
 

@@ -2,6 +2,7 @@ package rabbitevents
 
 import (
 	"context"
+	stderrors "errors"
 	"fmt"
 	"log/slog"
 	"math"
@@ -12,6 +13,8 @@ import (
 	"github.com/pkg/errors"
 	amqp "github.com/rabbitmq/amqp091-go"
 )
+
+var ErrStop = stderrors.New("stopped")
 
 const (
 	maxRequeueNo            = 3
@@ -33,11 +36,15 @@ type RabbitExchange interface {
 	Close() error
 }
 
+var _ RabbitExchange = (*RabbitExchangeImpl)(nil)
+
 type RabbitExchangeImpl struct {
+	ctx                     context.Context
 	rabbitIni               RabbitConfig
 	rabbitEmitConnection    *connectionManager
 	rabbitConsumeConnection *connectionManager
 	logger                  *slog.Logger
+	retryAutoDelete         bool
 }
 
 type connectionManager struct {
@@ -57,6 +64,7 @@ func NewRabbitExchange(rabbitIni RabbitConfig, opts ...rabbitExchangeOpt) *Rabbi
 		rabbitConnectionConnectTimeout: make(chan int, 1),
 	}
 	re := &RabbitExchangeImpl{
+		ctx:                     context.Background(),
 		rabbitIni:               rabbitIni,
 		rabbitEmitConnection:    rabbitEmitConnection,
 		rabbitConsumeConnection: rabbitConsumeConnection,
@@ -74,6 +82,12 @@ func NewRabbitExchange(rabbitIni RabbitConfig, opts ...rabbitExchangeOpt) *Rabbi
 
 type rabbitExchangeOpt func(*RabbitExchangeImpl)
 
+func WithContext(ctx context.Context) rabbitExchangeOpt {
+	return func(e *RabbitExchangeImpl) {
+		e.ctx = ctx
+	}
+}
+
 func WithLogger(logger *slog.Logger) rabbitExchangeOpt {
 	return func(e *RabbitExchangeImpl) {
 		e.logger = logger
@@ -87,6 +101,15 @@ func (re *RabbitExchangeImpl) log() *slog.Logger {
 	return re.logger
 }
 
+// WithRetryAutoDelete causes the retry exchange to be declared as auto-delete.
+//
+// This should only be used in tests.
+func WithRetryAutoDelete() rabbitExchangeOpt {
+	return func(e *RabbitExchangeImpl) {
+		e.retryAutoDelete = true
+	}
+}
+
 func (re *RabbitExchangeImpl) Close() error {
 	err := re.rabbitEmitConnection.closeConnection()
 	if err != nil {
@@ -95,7 +118,11 @@ func (re *RabbitExchangeImpl) Close() error {
 	return re.rabbitConsumeConnection.closeConnection()
 }
 
-func (re *RabbitExchangeImpl) SendTo(name, exchangeType string, durable, autoDelete bool, key string) MessageHandleFunc {
+func (re *RabbitExchangeImpl) SendTo(
+	name, exchangeType string,
+	durable, autoDelete bool,
+	key string,
+) MessageHandleFunc {
 	var conn *amqp.Connection
 	var ch *amqp.Channel
 	var version int64 = 0
@@ -170,7 +197,6 @@ func (re *RabbitExchangeImpl) SendTo(name, exchangeType string, durable, autoDel
 					false,        // no-wait
 					nil,          // args
 				)
-
 				if err != nil {
 					return nil, 0, err
 				}
@@ -184,11 +210,13 @@ func (re *RabbitExchangeImpl) SendTo(name, exchangeType string, durable, autoDel
 		defer chM.Unlock()
 		if oldVersion == version {
 			if ch != nil {
-				ch.Close()
+				err := ch.Close()
+				if err != nil {
+					logger.Error("rabbit:SendTo:ch.Close Channel Failed", slog.Any("reason", err))
+				}
 				ch = nil
 			}
 		}
-
 	}
 
 	return func(ctx context.Context, message []byte) error {
@@ -247,21 +275,28 @@ func (re *RabbitExchangeImpl) SendTo(name, exchangeType string, durable, autoDel
 	}
 }
 
-func (re *RabbitExchangeImpl) ReceiveFrom(name, exchangeType string, durable, autoDelete bool, key string, clientName string) (func(MessageHandleFunc) error, func(), error) {
-	return re.Receive(ExchangeSettings{
-		Name:         name,
-		ExchangeType: exchangeType,
-		Durable:      durable,
-		AutoDelete:   autoDelete,
-		Exclusive:    false,
-		NoWait:       false,
-		Args:         nil,
-	}, QueueSettings{
-		Name:       clientName,
-		RoutingKey: key,
-		AutoDelete: true,
-		Exclusive:  true,
-	})
+func (re *RabbitExchangeImpl) ReceiveFrom(
+	name, exchangeType string,
+	durable, autoDelete bool,
+	key, clientName string,
+) (func(MessageHandleFunc) error, func(), error) {
+	return re.Receive(
+		ExchangeSettings{
+			Name:         name,
+			ExchangeType: exchangeType,
+			Durable:      durable,
+			AutoDelete:   autoDelete,
+			Exclusive:    false,
+			NoWait:       false,
+			Args:         nil,
+		},
+		QueueSettings{
+			Name:       clientName,
+			RoutingKey: key,
+			AutoDelete: true,
+			Exclusive:  true,
+		},
+	)
 }
 
 func (re *RabbitExchangeImpl) BulkReceiveFrom(
@@ -273,21 +308,26 @@ func (re *RabbitExchangeImpl) BulkReceiveFrom(
 	maxWait time.Duration,
 	batchSize int,
 ) (func(BulkMessageHandleFunc) error, func(), error) {
-	return re.BulkReceive(ExchangeSettings{
-		Name:         name,
-		ExchangeType: exchangeType,
-		Durable:      durable,
-		AutoDelete:   autoDelete,
-		Exclusive:    false,
-		NoWait:       false,
-		Args:         nil,
-	}, QueueSettings{
-		Name:       clientName,
-		RoutingKey: key,
-		AutoDelete: true,
-		Exclusive:  true,
-		Prefetch:   prefetchCount,
-	}, maxWait, batchSize)
+	return re.BulkReceive(
+		ExchangeSettings{
+			Name:         name,
+			ExchangeType: exchangeType,
+			Durable:      durable,
+			AutoDelete:   autoDelete,
+			Exclusive:    false,
+			NoWait:       false,
+			Args:         nil,
+		},
+		QueueSettings{
+			Name:       clientName,
+			RoutingKey: key,
+			AutoDelete: true,
+			Exclusive:  true,
+			Prefetch:   prefetchCount,
+		},
+		maxWait,
+		batchSize,
+	)
 }
 
 type ExchangeSettings struct {
@@ -319,7 +359,6 @@ func (re *RabbitExchangeImpl) getConsumeChannel(
 ) (*amqp.Channel, <-chan amqp.Delivery, chan *amqp.Error, func(), error) {
 	logger := re.log()
 	conn, err := re.rabbitConsumeConnection.getEventConnection(logger)
-
 	if err != nil {
 		return nil, nil, nil, func() {}, err
 	}
@@ -360,21 +399,20 @@ func (re *RabbitExchangeImpl) getConsumeChannel(
 		exchange.NoWait,       // no-wait
 		exchange.Args,         // args
 	)
-
 	if err != nil {
 		return nil, nil, nil, closeChan, err
 	}
 
 	err = ch.ExchangeDeclare(
-		retryExchangeName, // name
-		retryExchangeType, // type
-		true,              // durable
-		false,             // delete when unused
-		false,             // exclusive
-		false,             // no-wait
-		nil,               // args
-	)
+		retryExchangeName,   // name
+		retryExchangeType,   // type
+		!re.retryAutoDelete, // durable
+		re.retryAutoDelete,  // delete when unused
+		false,               // exclusive
+		false,               // no-wait
+		nil,                 // args
 
+	)
 	if err != nil {
 		return nil, nil, nil, closeChan, err
 	}
@@ -387,7 +425,6 @@ func (re *RabbitExchangeImpl) getConsumeChannel(
 		queue.NoWait,     // no-wait
 		queue.Args,       // args
 	)
-
 	if err != nil {
 		logger.Error("rabbit:ProcessMessage:QueueDeclare Failed", slog.Any("reason", err))
 		return nil, nil, nil, closeChan, err
@@ -398,9 +435,8 @@ func (re *RabbitExchangeImpl) getConsumeChannel(
 		queue.RoutingKey, // routing key
 		exchange.Name,    // exchange name
 		queue.NoWait,     // no-wait
-		queue.BindArgs,   //args
+		queue.BindArgs,   // args
 	)
-
 	if err != nil {
 		logger.Error("rabbit:ProcessMessage:QueueBind Failed", slog.Any("reason", err))
 		return nil, nil, nil, closeChan, err
@@ -415,21 +451,23 @@ func (re *RabbitExchangeImpl) getConsumeChannel(
 		false,  // no-wait
 		nil,    // args
 	)
-
 	if err != nil {
 		logger.Error("rabbit:ProcessMessage:Consume Failed", slog.Any("reason", err))
 
 		return nil, nil, nil, closeChan, err
 	}
 
-	//We buffer the errors, so that when we are not processing the error message (like while shutting down) the channel can still close.
+	// We buffer the errors, so that when we are not processing the error message (like while shutting down) the channel can still close.
 	errChan := make(chan *amqp.Error, 1)
 	ch.NotifyClose(errChan)
 
 	return ch, msgs, errChan, closeChan, nil
 }
 
-func (re *RabbitExchangeImpl) Receive(exchange ExchangeSettings, queue QueueSettings) (func(MessageHandleFunc) error, func(), error) {
+func (re *RabbitExchangeImpl) Receive(
+	exchange ExchangeSettings,
+	queue QueueSettings,
+) (func(MessageHandleFunc) error, func(), error) {
 	retryExchangeName := fmt.Sprintf("%s-%s", exchange.Name, retryExchangeNameSuffix)
 
 	channel, msgs, errChan, closer, err := re.getConsumeChannel(exchange, queue, retryExchangeName)
@@ -437,11 +475,18 @@ func (re *RabbitExchangeImpl) Receive(exchange ExchangeSettings, queue QueueSett
 		return nil, nil, err
 	}
 
+	queueCtx, queueCancel := context.WithCancelCause(re.ctx)
 	logger := re.log()
 	stop := make(chan struct{})
 	return func(handler MessageHandleFunc) error {
+			defer close(stop)
 			defer closer()
 			for {
+				select {
+				case <-queueCtx.Done():
+					return context.Cause(queueCtx)
+				default:
+				}
 				// If the `msgs` channel is no longer valid, then we need to open a new one
 				// If that attempt fails, the channel will remain invalid, so we will try again, until we succeed
 				if msgs == nil {
@@ -457,17 +502,39 @@ func (re *RabbitExchangeImpl) Receive(exchange ExchangeSettings, queue QueueSett
 				}
 
 				select {
+				case <-queueCtx.Done():
+					return context.Cause(queueCtx)
 				case m, ok := <-msgs:
-					//if the channel is closed, we want to stop receiving on this one, and we need to open a new one
+					// if the channel is closed, we want to stop receiving on this one, and we need to open a new one
 					if !ok {
 						msgs = nil
 						continue
 					}
 					go func(m amqp.Delivery) {
-						ctx, cancel := context.WithCancel(context.Background())
+						ctx, cancel := context.WithCancel(queueCtx)
 						defer cancel()
 						err := handler(ctx, m.Body)
 						if err != nil {
+							if stderrors.Is(err, context.Canceled) {
+								logger.Error(
+									"Context cancelled handling rabbit message",
+									slog.String("exchange", exchange.Name),
+									slog.String("queue", queue.Name),
+									slog.String("body", string(m.Body)),
+									slog.Any("reason", err),
+								)
+								return
+							}
+							if stderrors.Is(err, ErrStop) {
+								logger.Error(
+									"Stop requested",
+									slog.String("exchange", exchange.Name),
+									slog.String("queue", queue.Name),
+									slog.String("body", string(m.Body)),
+									slog.Any("reason", err),
+								)
+								return
+							}
 							logger.Error(
 								"Error handling rabbit message",
 								slog.String("exchange", exchange.Name),
@@ -511,9 +578,6 @@ func (re *RabbitExchangeImpl) Receive(exchange ExchangeSettings, queue QueueSett
 						}
 					}(m)
 
-				case <-stop:
-					return nil
-
 				case e := <-errChan:
 					// Something went wrong
 					if e == nil {
@@ -543,11 +607,19 @@ func (re *RabbitExchangeImpl) Receive(exchange ExchangeSettings, queue QueueSett
 			}
 		},
 		func() {
-			close(stop)
+			if queueCancel != nil {
+				queueCancel(ErrStop)
+				<-stop
+			}
 		}, nil
 }
 
-func (re *RabbitExchangeImpl) BulkReceive(exchange ExchangeSettings, queue QueueSettings, maxWait time.Duration, batchSize int) (func(BulkMessageHandleFunc) error, func(), error) {
+func (re *RabbitExchangeImpl) BulkReceive(
+	exchange ExchangeSettings,
+	queue QueueSettings,
+	maxWait time.Duration,
+	batchSize int,
+) (func(BulkMessageHandleFunc) error, func(), error) {
 	retryExchangeName := fmt.Sprintf("%s-%s", exchange.Name, retryExchangeNameSuffix)
 
 	channel, msgs, errChan, closer, err := re.getConsumeChannel(exchange, queue, retryExchangeName)
@@ -559,18 +631,25 @@ func (re *RabbitExchangeImpl) BulkReceive(exchange ExchangeSettings, queue Queue
 		batchSize = queue.Prefetch
 	}
 
+	queueCtx, queueCancel := context.WithCancelCause(re.ctx)
 	logger := re.log()
 	stop := make(chan struct{})
 	return func(handler BulkMessageHandleFunc) error {
+			defer close(stop)
 			defer closer()
 			batch := make([]amqp.Delivery, 0, batchSize)
 			// TODO: Inject the NewTimer function into the service to enable us to mock it during testing.
 			fillWaitTimer := time.NewTimer(maxWait)
 			handleMessages := func(messages []amqp.Delivery) {
+				select {
+				case <-queueCtx.Done():
+					return
+				default:
+				}
 				if len(messages) == 0 {
 					return
 				}
-				ctx, cancel := context.WithCancel(context.Background())
+				ctx, cancel := context.WithCancel(queueCtx)
 				defer cancel()
 				errors := handler(ctx, messages)
 				erroredMessages := make(map[uint64]struct{})
@@ -619,11 +698,19 @@ func (re *RabbitExchangeImpl) BulkReceive(exchange ExchangeSettings, queue Queue
 						// we no guarantee that we receive the messages in the order of their delivery
 						// tag, and processing batches in parallel we might end up acking messages we don't
 						// want acked.
-						m.Ack(false)
+						err := m.Ack(false)
+						if err != nil {
+							logger.Error("Error acknowledging message", slog.Any("reason", err))
+						}
 					}
 				}
 			}
 			for {
+				select {
+				case <-queueCtx.Done():
+					return context.Cause(queueCtx)
+				default:
+				}
 				// If the `msgs` channel is no longer valid, then we need to open a new one
 				// If that attempt fails, the channel will remain invalid, so we will try again, until we succeed
 				if msgs == nil {
@@ -641,7 +728,15 @@ func (re *RabbitExchangeImpl) BulkReceive(exchange ExchangeSettings, queue Queue
 					continue
 				}
 				select {
+				case <-queueCtx.Done():
+					return context.Cause(queueCtx)
 				case m, ok := <-msgs:
+					select {
+					case <-queueCtx.Done():
+						return context.Cause(queueCtx)
+					default:
+					}
+
 					// if the channel is closed, we want to stop receiving on this one, and we need to open a new one
 					if !ok {
 						msgs = nil
@@ -694,7 +789,10 @@ func (re *RabbitExchangeImpl) BulkReceive(exchange ExchangeSettings, queue Queue
 			}
 		},
 		func() {
-			close(stop)
+			if queueCancel != nil {
+				queueCancel(ErrStop)
+				<-stop
+			}
 		}, nil
 }
 
@@ -722,7 +820,6 @@ func requeueMessage(
 			"x-message-ttl":             expiration,
 		}, // args
 	)
-
 	if err != nil {
 		logger.Error("rabbit:requeueMessage:QueueDeclare Failed", slog.Any("reason", err))
 		return err
@@ -735,7 +832,6 @@ func requeueMessage(
 		queue.NoWait,      // no-wait
 		queue.Args,        // args
 	)
-
 	if err != nil {
 		logger.Error("rabbit:requeueMessage:QueueBind Failed", slog.Any("reason", err))
 		return err
@@ -769,7 +865,6 @@ func (cm *connectionManager) getEventConnection(logger *slog.Logger) (*amqp.Conn
 		return ec, nil
 	}
 	return cm.newEventConnection(logger, ec, cm.rabbitIni)
-
 }
 
 func (cm *connectionManager) readEventConnection() *amqp.Connection {
@@ -785,7 +880,6 @@ It uses rabbitConnectionConnectTimeout as a semaphore with timeout to prevent ma
 It still needs to lock rabbitConnectionMutex that is used for faster read access
 */
 func (cm *connectionManager) newEventConnection(logger *slog.Logger, old *amqp.Connection, rabbitIni RabbitConfig) (*amqp.Connection, error) {
-
 	timer := time.NewTimer(rabbitIni.GetConnectTimeout())
 	defer timer.Stop()
 	select {
@@ -802,7 +896,6 @@ func (cm *connectionManager) newEventConnection(logger *slog.Logger, old *amqp.C
 			defer cm.rabbitConnectionMutex.Unlock()
 
 			conn, err := amqp.Dial(fmt.Sprintf("amqp://%s:%s@%s/", rabbitIni.GetUserName(), rabbitIni.GetPassword(), rabbitIni.GetHost()))
-
 			if err != nil {
 				return nil, err
 			}
