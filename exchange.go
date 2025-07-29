@@ -516,18 +516,18 @@ func (re *RabbitExchangeImpl) Receive(
 						err := handler(ctx, m.Body)
 						if err != nil {
 							if stderrors.Is(err, context.Canceled) {
+								if stderrors.Is(context.Cause(ctx), ErrStop) {
+									logger.Error(
+										"Stop requested",
+										slog.String("exchange", exchange.Name),
+										slog.String("queue", queue.Name),
+										slog.String("body", string(m.Body)),
+										slog.Any("reason", err),
+									)
+									return
+								}
 								logger.Error(
 									"Context cancelled handling rabbit message",
-									slog.String("exchange", exchange.Name),
-									slog.String("queue", queue.Name),
-									slog.String("body", string(m.Body)),
-									slog.Any("reason", err),
-								)
-								return
-							}
-							if stderrors.Is(err, ErrStop) {
-								logger.Error(
-									"Stop requested",
 									slog.String("exchange", exchange.Name),
 									slog.String("queue", queue.Name),
 									slog.String("body", string(m.Body)),
@@ -641,22 +641,42 @@ func (re *RabbitExchangeImpl) BulkReceive(
 			// TODO: Inject the NewTimer function into the service to enable us to mock it during testing.
 			fillWaitTimer := time.NewTimer(maxWait)
 			handleMessages := func(messages []amqp.Delivery) {
-				select {
-				case <-queueCtx.Done():
-					return
-				default:
-				}
 				if len(messages) == 0 {
 					return
 				}
 				ctx, cancel := context.WithCancel(queueCtx)
 				defer cancel()
+				select {
+				case <-queueCtx.Done():
+					return
+				default:
+				}
 				errors := handler(ctx, messages)
 				erroredMessages := make(map[uint64]struct{})
 				for _, msgError := range errors {
 					m := msgError.message
 					err := msgError.err
 					erroredMessages[m.DeliveryTag] = struct{}{}
+					if stderrors.Is(err, context.Canceled) {
+						if stderrors.Is(context.Cause(ctx), ErrStop) {
+							logger.Error(
+								"Stop requested",
+								slog.String("exchange", exchange.Name),
+								slog.String("queue", queue.Name),
+								slog.String("body", string(m.Body)),
+								slog.Any("reason", err),
+							)
+							continue
+						}
+						logger.Error(
+							"Context cancelled handling rabbit message",
+							slog.String("exchange", exchange.Name),
+							slog.String("queue", queue.Name),
+							slog.String("body", string(m.Body)),
+							slog.Any("reason", err),
+						)
+						continue
+					}
 					logger.Error(
 						"Error handling rabbit message",
 						slog.String("exchange", exchange.Name),
@@ -756,8 +776,6 @@ func (re *RabbitExchangeImpl) BulkReceive(
 						batch = make([]amqp.Delivery, 0, batchSize)
 					}
 					fillWaitTimer.Reset(maxWait)
-				case <-stop:
-					return nil
 
 				case e := <-errChan:
 					// Something went wrong
