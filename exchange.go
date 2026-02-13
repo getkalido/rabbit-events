@@ -915,13 +915,15 @@ func (cm *connectionManager) newEventConnection(logger *slog.Logger, old *amqp.C
 			defer cm.rabbitConnectionMutex.Unlock()
 
 			u := url.URL{
-				Host: rabbitIni.GetHost(),
+				Scheme: "amqp",
+				Host:   rabbitIni.GetHost(),
+				Path:   "/",
 				User: url.UserPassword(
 					rabbitIni.GetUserName(),
 					rabbitIni.GetPassword(),
 				),
 			}
-			conn, err := amqp.Dial(fmt.Sprintf("amqp://%s:%s@%s/", rabbitIni.GetUserName(), rabbitIni.GetPassword(), rabbitIni.GetHost()))
+			conn, err := amqp.Dial(u.String())
 			if err != nil {
 				return nil, err
 			}
