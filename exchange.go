@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
+	"net/url"
 	"runtime"
 	"sync"
 	"time"
@@ -913,6 +914,13 @@ func (cm *connectionManager) newEventConnection(logger *slog.Logger, old *amqp.C
 			cm.rabbitConnectionMutex.Lock()
 			defer cm.rabbitConnectionMutex.Unlock()
 
+			u := url.URL{
+				Host: rabbitIni.GetHost(),
+				User: url.UserPassword(
+					rabbitIni.GetUserName(),
+					rabbitIni.GetPassword(),
+				),
+			}
 			conn, err := amqp.Dial(fmt.Sprintf("amqp://%s:%s@%s/", rabbitIni.GetUserName(), rabbitIni.GetPassword(), rabbitIni.GetHost()))
 			if err != nil {
 				return nil, err

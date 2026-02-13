@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"os"
 	"sync"
 	"sync/atomic"
@@ -68,7 +69,16 @@ func ProcessDirectMessage(rabbitIni RabbitConfig, exchange, routingKey string, h
 	for {
 		time.Sleep(time.Millisecond * 250)
 
-		conn, err := amqp.Dial(fmt.Sprintf("amqp://%s:%s@%s/", rabbitIni.GetUserName(), rabbitIni.GetPassword(), rabbitIni.GetHost()))
+		u := url.URL{
+			Scheme: "amqp",
+			Host:   rabbitIni.GetHost(),
+			Path:   "/",
+			User: url.UserPassword(
+				rabbitIni.GetUserName(),
+				rabbitIni.GetPassword(),
+			),
+		}
+		conn, err := amqp.Dial(u.String())
 		if err != nil {
 			DefaultLogger().Error("rabbit:ProcessDirectMessage:Dial Failed", slog.Any("reason", err))
 			continue

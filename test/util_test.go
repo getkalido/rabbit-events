@@ -1,7 +1,7 @@
 package test
 
 import (
-	"fmt"
+	"net/url"
 	time "time"
 
 	rabbitevents "github.com/getkalido/rabbit-events"
@@ -54,14 +54,16 @@ func RabbitDo(
 	fn func(conn *amqp.Channel),
 ) error {
 	GinkgoHelper()
-	conn, err := amqp.Dial(
-		fmt.Sprintf(
-			"amqp://%s:%s@%s/",
+	u := url.URL{
+		Scheme: "amqp",
+		Host:   cfg.GetHost(),
+		Path:   "/",
+		User: url.UserPassword(
 			cfg.GetUserName(),
 			cfg.GetPassword(),
-			cfg.GetHost(),
 		),
-	)
+	}
+	conn, err := amqp.Dial(u.String())
 	if err != nil {
 		return errors.Wrap(err, "rabbit: RabbitDo: Dial Failed")
 	}
